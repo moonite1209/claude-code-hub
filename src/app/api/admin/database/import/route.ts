@@ -1,7 +1,10 @@
 import { writeFile } from "node:fs/promises";
 import { getSession } from "@/lib/auth";
 import { acquireBackupLock, releaseBackupLock } from "@/lib/database-backup/backup-lock";
-import { checkDatabaseConnection, executePgRestore } from "@/lib/database-backup/docker-executor";
+import {
+  checkDatabaseConnection,
+  executePgRestore,
+} from "@/lib/database-backup/container-executor";
 import {
   cleanupTempFile,
   generateTempFilePath,

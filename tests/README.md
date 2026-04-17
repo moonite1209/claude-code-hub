@@ -33,10 +33,7 @@ AUTO_CLEANUP_TEST_DATA=false bun run test
 
 **手动清理所有历史测试数据**：
 ```bash
-# PowerShell
-.\scripts\cleanup-test-users.ps1
-
-# Bash/Git Bash
+# Bash
 bash scripts/cleanup-test-users.sh
 ```
 
@@ -147,7 +144,7 @@ const ADMIN_TOKEN = process.env.TEST_ADMIN_TOKEN;
 
 1. **启动数据库**：
 ```bash
-docker compose up -d postgres redis
+make db
 ```
 
 2. **配置测试数据库**（可选）：
@@ -254,7 +251,7 @@ bun run test:ui
 ### 完整验证（需要时）
 ```bash
 # 启动数据库
-docker compose up -d postgres redis
+make db
 
 # 启用所有测试（修改 vitest.config.ts）
 # 然后运行

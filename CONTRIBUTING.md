@@ -118,10 +118,10 @@ bun run typecheck
 - 规则说明：`docs/i18n-translation-quality.md`
 - PR Checklist：`docs/i18n-pr-checklist.md`
 
-CI 会在 PR 上运行 `Docker Build Test`（见 `.github/CI_CD_SETUP.md`）。如需验证容器构建，可本地执行：
+CI 会在 PR 上运行容器构建测试（见 `.github/CI_CD_SETUP.md`）。如需验证 rootless Podman 构建，可本地执行：
 
 ```bash
-docker compose build
+podman build -f deploy/Dockerfile -t claude-code-hub-local:dev .
 ```
 
 ### 9. PR 流程 PR Process
@@ -191,7 +191,7 @@ Claude Code Hub centralizes multiple AI providers with smart routing, tenant con
    ```bash
    bun run dev
    ```
-4. For Docker-based flows, review `README.md` and `.github/CI_CD_SETUP.md`.
+4. For Podman-based flows, review `README.md` and `.github/CI_CD_SETUP.md`.
 
 ### 4. How to Contribute
 
@@ -244,10 +244,10 @@ Always verify locally before requesting a review:
 bun run lint
 bun run typecheck
 # Run bun run test or relevant scripts when logic changes
-docker compose build   # optional, mirrors CI Docker Build Test
+podman build -f deploy/Dockerfile -t claude-code-hub-local:dev .   # optional, mirrors CI image build
 ```
 
-GitHub Actions runs `Docker Build Test` on every PR to `dev` and `main`; see `.github/CI_CD_SETUP.md` for the full matrix.
+GitHub Actions runs the container build test on every PR to `dev` and `main`; see `.github/CI_CD_SETUP.md` for the full matrix.
 
 ### 9. PR Process
 
@@ -257,7 +257,7 @@ GitHub Actions runs `Docker Build Test` on every PR to `dev` and `main`; see `.g
 1. Fill out the PR template with context, screenshots/logs, and testing notes.
 2. Confirm the checklist:
    - [ ] Base branch is `dev`
-   - [ ] Docker Build Test (and other required checks) succeed
+   - [ ] Container build test (and other required checks) succeed
    - [ ] Conflicts resolved and branch up to date
    - [ ] Linked Issues or Discussions when applicable
 3. Maintainers aim to respond within two business days. Continue pushing to the same branch for follow-up changes.
@@ -266,7 +266,7 @@ GitHub Actions runs `Docker Build Test` on every PR to `dev` and `main`; see `.g
 ### 10. Issue Reporting
 
 - File Issues with clear titles, labels, reproduction steps, expected vs. actual behavior, and logs or screenshots.
-- Include environment details (OS, Docker/Node versions, provider configuration).
+- Include environment details (OS, Podman/Node versions, provider configuration).
 - For urgent incidents, leave a comment tagging maintainers or post in the Telegram group.
 - Search existing Issues/Discussions to prevent duplicates before creating a new report.
 

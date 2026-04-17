@@ -49,64 +49,65 @@ function makeFakeProcess(opts?: { withStdin?: boolean }) {
   };
 }
 
-describe("getDockerComposeExec", () => {
-  const saved = process.env.PG_COMPOSE_EXEC;
+describe("getContainerExecCommand", () => {
+  const saved = process.env.PG_CONTAINER_EXEC;
 
   afterEach(() => {
     if (saved === undefined) {
-      delete process.env.PG_COMPOSE_EXEC;
+      delete process.env.PG_CONTAINER_EXEC;
     } else {
-      process.env.PG_COMPOSE_EXEC = saved;
+      process.env.PG_CONTAINER_EXEC = saved;
     }
   });
 
-  test("returns null when PG_COMPOSE_EXEC is unset", async () => {
-    delete process.env.PG_COMPOSE_EXEC;
-    const { getDockerComposeExec } = await import("@/lib/database-backup/docker-executor");
-    expect(getDockerComposeExec()).toBeNull();
+  test("returns null when PG_CONTAINER_EXEC is unset", async () => {
+    delete process.env.PG_CONTAINER_EXEC;
+    const { getContainerExecCommand } = await import("@/lib/database-backup/container-executor");
+    expect(getContainerExecCommand()).toBeNull();
   });
 
-  test("returns null when PG_COMPOSE_EXEC is empty string", async () => {
-    process.env.PG_COMPOSE_EXEC = "";
-    const { getDockerComposeExec } = await import("@/lib/database-backup/docker-executor");
-    expect(getDockerComposeExec()).toBeNull();
+  test("returns null when PG_CONTAINER_EXEC is empty string", async () => {
+    process.env.PG_CONTAINER_EXEC = "";
+    const { getContainerExecCommand } = await import("@/lib/database-backup/container-executor");
+    expect(getContainerExecCommand()).toBeNull();
   });
 
   test("parses command with spaces correctly", async () => {
-    process.env.PG_COMPOSE_EXEC = "docker compose -f /home/dev/docker-compose.yaml -p cch-dev";
-    const { getDockerComposeExec } = await import("@/lib/database-backup/docker-executor");
-    expect(getDockerComposeExec()).toEqual([
-      "docker",
-      "compose",
-      "-f",
-      "/home/dev/docker-compose.yaml",
-      "-p",
-      "cch-dev",
-    ]);
+    process.env.PG_CONTAINER_EXEC = "podman exec cch-dev-postgres";
+    const { getContainerExecCommand } = await import("@/lib/database-backup/container-executor");
+    expect(getContainerExecCommand()).toEqual(["podman", "exec", "cch-dev-postgres"]);
   });
 });
 
 describe("spawnPgTool", () => {
-  const saved = process.env.PG_COMPOSE_EXEC;
+  const savedContainerExec = process.env.PG_CONTAINER_EXEC;
+  const savedComposeExec = process.env.PG_COMPOSE_EXEC;
 
   beforeEach(() => {
     mockSpawn.mockReset();
   });
 
   afterEach(() => {
-    if (saved === undefined) {
+    if (savedContainerExec === undefined) {
+      delete process.env.PG_CONTAINER_EXEC;
+    } else {
+      process.env.PG_CONTAINER_EXEC = savedContainerExec;
+    }
+
+    if (savedComposeExec === undefined) {
       delete process.env.PG_COMPOSE_EXEC;
     } else {
-      process.env.PG_COMPOSE_EXEC = saved;
+      process.env.PG_COMPOSE_EXEC = savedComposeExec;
     }
   });
 
   test("direct mode: spawns the command directly with merged env", async () => {
+    delete process.env.PG_CONTAINER_EXEC;
     delete process.env.PG_COMPOSE_EXEC;
     const fakeProc = makeFakeProcess();
     mockSpawn.mockReturnValue(fakeProc);
 
-    const { spawnPgTool } = await import("@/lib/database-backup/docker-executor");
+    const { spawnPgTool } = await import("@/lib/database-backup/container-executor");
     const result = spawnPgTool("pg_dump", ["-h", "localhost"], {
       PGPASSWORD: "secret",
     });
@@ -121,64 +122,54 @@ describe("spawnPgTool", () => {
     );
   });
 
-  test("docker exec mode: wraps command with docker compose exec", async () => {
-    process.env.PG_COMPOSE_EXEC = "docker compose -f /dev/dc.yaml -p proj";
+  test("container exec mode: wraps command with podman exec", async () => {
+    process.env.PG_CONTAINER_EXEC = "podman exec cch-dev-postgres";
+    delete process.env.PG_COMPOSE_EXEC;
     const fakeProc = makeFakeProcess();
     mockSpawn.mockReturnValue(fakeProc);
 
-    const { spawnPgTool } = await import("@/lib/database-backup/docker-executor");
+    const { spawnPgTool } = await import("@/lib/database-backup/container-executor");
     const result = spawnPgTool("pg_dump", ["-Fc", "-v"], {
       PGPASSWORD: "secret",
     });
 
     expect(result).toBe(fakeProc);
     expect(mockSpawn).toHaveBeenCalledWith(
-      "docker",
-      [
-        "compose",
-        "-f",
-        "/dev/dc.yaml",
-        "-p",
-        "proj",
-        "exec",
-        "-T",
-        "-e",
-        "PGPASSWORD=secret",
-        "postgres",
-        "pg_dump",
-        "-Fc",
-        "-v",
-      ],
+      "podman",
+      ["exec", "-e", "PGPASSWORD=secret", "cch-dev-postgres", "pg_dump", "-Fc", "-v"],
       expect.objectContaining({ env: expect.any(Object) })
     );
   });
 
-  test("docker exec mode with stdin: adds -i flag", async () => {
-    process.env.PG_COMPOSE_EXEC = "docker compose -p proj";
+  test("container exec mode with stdin: adds -i flag", async () => {
+    process.env.PG_CONTAINER_EXEC = "podman exec cch-dev-postgres";
+    delete process.env.PG_COMPOSE_EXEC;
     const fakeProc = makeFakeProcess({ withStdin: true });
     mockSpawn.mockReturnValue(fakeProc);
 
-    const { spawnPgTool } = await import("@/lib/database-backup/docker-executor");
+    const { spawnPgTool } = await import("@/lib/database-backup/container-executor");
     spawnPgTool("pg_restore", ["-d", "mydb"], { PGPASSWORD: "pw" }, { stdin: true });
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
-    // -T and -i should both be present before "postgres"
-    const postgresIdx = spawnArgs.indexOf("postgres");
-    const flags = spawnArgs.slice(spawnArgs.indexOf("exec") + 1, postgresIdx);
-    expect(flags).toContain("-T");
+    const containerIdx = spawnArgs.indexOf("cch-dev-postgres");
+    const flags = spawnArgs.slice(spawnArgs.indexOf("exec") + 1, containerIdx);
     expect(flags).toContain("-i");
   });
 
-  test("docker exec mode without PGPASSWORD: no -e flag", async () => {
+  test("legacy compose exec mode remains supported", async () => {
+    delete process.env.PG_CONTAINER_EXEC;
     process.env.PG_COMPOSE_EXEC = "docker compose -p proj";
     const fakeProc = makeFakeProcess();
     mockSpawn.mockReturnValue(fakeProc);
 
-    const { spawnPgTool } = await import("@/lib/database-backup/docker-executor");
-    spawnPgTool("pg_dump", [], {});
+    const { spawnPgTool } = await import("@/lib/database-backup/container-executor");
+    spawnPgTool("pg_dump", [], { PGPASSWORD: "pw" });
 
-    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
-    expect(spawnArgs).not.toContain("-e");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "docker",
+      ["compose", "-p", "proj", "exec", "-T", "-e", "PGPASSWORD=pw", "postgres", "pg_dump"],
+      expect.objectContaining({ env: expect.any(Object) })
+    );
   });
 });
 
@@ -187,7 +178,7 @@ describe("checkDatabaseConnection", () => {
     const { db } = await import("@/drizzle/db");
     (db.execute as MockInstance).mockResolvedValueOnce([{ "?column?": 1 }]);
 
-    const { checkDatabaseConnection } = await import("@/lib/database-backup/docker-executor");
+    const { checkDatabaseConnection } = await import("@/lib/database-backup/container-executor");
     expect(await checkDatabaseConnection()).toBe(true);
   });
 
@@ -195,7 +186,7 @@ describe("checkDatabaseConnection", () => {
     const { db } = await import("@/drizzle/db");
     (db.execute as MockInstance).mockRejectedValueOnce(new Error("connection refused"));
 
-    const { checkDatabaseConnection } = await import("@/lib/database-backup/docker-executor");
+    const { checkDatabaseConnection } = await import("@/lib/database-backup/container-executor");
     expect(await checkDatabaseConnection()).toBe(false);
   });
 });
@@ -211,7 +202,7 @@ describe("getDatabaseInfo", () => {
       },
     ]);
 
-    const { getDatabaseInfo } = await import("@/lib/database-backup/docker-executor");
+    const { getDatabaseInfo } = await import("@/lib/database-backup/container-executor");
     const info = await getDatabaseInfo();
 
     expect(info).toEqual({
@@ -225,7 +216,7 @@ describe("getDatabaseInfo", () => {
     const { db } = await import("@/drizzle/db");
     (db.execute as MockInstance).mockResolvedValueOnce([{}]);
 
-    const { getDatabaseInfo } = await import("@/lib/database-backup/docker-executor");
+    const { getDatabaseInfo } = await import("@/lib/database-backup/container-executor");
     const info = await getDatabaseInfo();
 
     expect(info).toEqual({
@@ -239,7 +230,7 @@ describe("getDatabaseInfo", () => {
     const { db } = await import("@/drizzle/db");
     (db.execute as MockInstance).mockResolvedValueOnce([]);
 
-    const { getDatabaseInfo } = await import("@/lib/database-backup/docker-executor");
+    const { getDatabaseInfo } = await import("@/lib/database-backup/container-executor");
     const info = await getDatabaseInfo();
 
     expect(info).toEqual({

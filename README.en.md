@@ -122,20 +122,21 @@ For claude-code-hub users, AICodeMirror offers special benefits: register via th
 
 ### Requirements
 
-- Docker and Docker Compose (latest version recommended)
+- Linux
+- Rootless Podman
 - Optional (for local development): Node.js ≥ 20, Bun ≥ 1.3
 
-### 🚀 One-Click Deployment Script (✨ Recommended - Fully Automated)
+### 🚀 One-Click Deployment Script (✨ Recommended - Podman Native)
 
-The one-click deployment script **automatically handles** all of the following:
+The deployment script handles the following:
 
-- Check and install Docker and Docker Compose (Linux/macOS support auto-install)
-- Create deployment directory and configuration files
-- Generate secure admin token and database password
-- Start all services and wait for health checks
-- Display access URLs and admin token
+- Validate the Linux + rootless Podman environment
+- Create the deployment directory and runtime state file
+- Generate a secure admin token and database password
+- Create the Podman pod and start PostgreSQL / Redis / app / optional Caddy
+- Wait for health checks and print access URLs
 
-**Linux / macOS:**
+**Linux:**
 
 ```bash
 # Download and run the deployment script
@@ -152,20 +153,9 @@ chmod +x deploy.sh
 ./deploy.sh
 ```
 
-**Windows (PowerShell as Administrator):**
-
-```powershell
-# Download and run the deployment script
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ding113/claude-code-hub/main/scripts/deploy.ps1" -OutFile "deploy.ps1"
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-.\deploy.ps1
-```
-
 **Deployment Directories:**
 
-- Linux: `/www/compose/claude-code-hub`
-- macOS: `~/Applications/claude-code-hub`
-- Windows: `C:\ProgramData\claude-code-hub`
+- Linux: `~/.local/share/claude-code-hub`
 
 **Branch Selection:**
 
@@ -176,10 +166,11 @@ The script will prompt you to select a deployment branch:
 
 **Important Notes:**
 
-- ⚠️ Please save the **Admin Token** displayed by the script - it's the only credential to access the admin dashboard!
-- ⚠️ Windows users: If Docker Desktop is not installed, the script will automatically open the download page
+- ⚠️ Save the **Admin Token** printed by the script
+- ⚠️ The official Podman path supports Linux only
+- ⚠️ Optional Caddy uses high ports `8080/8443`; it does not promise `80/443 + HTTP-01` ACME automation
 
-### Three-Step Launch (Docker Compose)
+### Three-Step Launch (Podman)
 
 1. **Clone and configure**
 
@@ -189,30 +180,16 @@ The script will prompt you to select a deployment branch:
    cp .env.example .env
    ```
 
-2. **Edit configuration**
-
-   Edit the `.env` file and **update** `ADMIN_TOKEN` (admin login token):
+2. **Confirm Podman is rootless**
 
    ```bash
-   # MUST change this!
-   ADMIN_TOKEN=your-secure-token-here
-
-   # Docker Compose defaults (usually no changes needed)
-   DSN=postgres://postgres:postgres@postgres:5432/claude_code_hub
-   REDIS_URL=redis://redis:6379
+   podman info --format '{{.Host.Security.Rootless}}'
    ```
 
-3. **Start services**
+3. **Run the deployment script**
 
    ```bash
-   docker compose up -d
-   ```
-
-   Check status:
-
-   ```bash
-   docker compose ps
-   docker compose logs -f app
+   ./scripts/deploy.sh
    ```
 
 ### Access the application
@@ -223,7 +200,9 @@ Once started:
 - **API Docs (Scalar UI)**: `http://localhost:23000/api/actions/scalar`
 - **API Docs (Swagger UI)**: `http://localhost:23000/api/actions/docs`
 
-> 💡 **Tip**: To change the port, edit the `ports` section in `docker-compose.yml`.
+> 💡 **Tip**:
+> - Change the app port with `./scripts/deploy.sh --port <port>`.
+> - Enable high-port Caddy with `./scripts/deploy.sh --enable-caddy`.
 
 ## 🖼️ Screenshots
 
@@ -265,25 +244,29 @@ Multi-provider pool (Claude / OpenAI / Gemini / others) + PostgreSQL + Redis
 
 ## 🚢 Deployment
 
-### 🐳 Docker Compose (✨ Recommended, Production-Ready)
+### 🦭 Podman (✨ Recommended, rootless)
 
-Docker Compose is the **preferred deployment method** — it automatically provisions the database, Redis, and application services without manual dependency installation, ideal for production quick-start.
+Podman is the **official deployment path**. The script creates a rootless pod on Linux and persists PostgreSQL / Redis / Caddy data via bind mounts.
 
-1. Prepare `.env` (see `.env.example`) and point `DSN`/`REDIS_URL` to the Compose services.
-2. Start the stack:
+1. Run the deployment script:
    ```bash
-   docker compose up -d
+   ./scripts/deploy.sh
    ```
-3. Monitor:
+2. Monitor:
    ```bash
-   docker compose logs -f app
-   docker compose ps
+   podman pod logs -f claude-code-hub-<suffix>
+   podman pod ps
    ```
-4. Upgrade:
+3. Stop / start:
    ```bash
-   docker compose pull && docker compose up -d
+   podman pod stop claude-code-hub-<suffix>
+   podman pod start claude-code-hub-<suffix>
    ```
-   Stop and clean up with `docker compose down` when necessary.
+4. Optional Caddy:
+   ```bash
+   ./scripts/deploy.sh --enable-caddy --caddy-http-port 8080 --caddy-https-port 8443
+   ```
+   With `--domain`, the script still uses high ports; production TLS is best handled by an external gateway or DNS-01.
 
 ### Local development (dev toolchain)
 
@@ -293,6 +276,7 @@ Docker Compose is the **preferred deployment method** — it automatically provi
    - `make db`: start only database and Redis.
    - `make logs` / `make logs-app`: tail all services or app logs.
    - `make clean` / `make reset`: clean or fully reset the environment.
+   - `make app`: build and run the Podman app container on port `23000`.
 4. Use `make migrate` and `make db-shell` for schema operations.
 
 ### Manual deployment (bun build + start)
@@ -334,8 +318,8 @@ Docker Compose is the **preferred deployment method** — it automatically provi
 ## ❓ FAQ
 
 1. **Database connection failures**
-   - Verify the `DSN` format and credentials; use service names (e.g., `postgres:5432`) within Docker.
-   - Inspect `docker compose ps` or local PostgreSQL status, and use `make db-shell` for deeper checks.
+   - Verify the `DSN` format and credentials; within containers prefer `127.0.0.1:5432` or the published host port.
+   - Inspect `podman pod ps` or local PostgreSQL status, and use `make db-shell` for deeper checks.
 
 2. **What if Redis goes offline?**
    - The platform uses a fail-open policy: rate limiting and session metrics degrade gracefully while requests continue flowing. Monitor logs for Redis errors and restore the service asap.
@@ -351,6 +335,11 @@ Docker Compose is the **preferred deployment method** — it automatically provi
 5. **Proxy configuration issues**
    - Make sure URLs include a protocol (`http://`, `socks5://`, etc.) and validate via the “Test Connection” button in the UI.
    - If `proxy_fallback_to_direct` is enabled, confirm via logs that the system retried without the proxy when failures occur.
+
+6. **Rootless Podman permission issues**
+   - Database directories must be owned by the container UID/GID, not the host UID/GID.
+   - Use the script, or run `podman unshare chown -R 999:999 ~/.local/share/claude-code-hub/data/postgres`.
+   - On SELinux hosts, private bind mounts use `:Z`; use `:z` only for explicitly shared content.
 
 ## 🤝 Contributing
 

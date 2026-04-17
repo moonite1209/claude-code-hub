@@ -1,906 +1,590 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
-# Colors for output
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/podman-helpers.sh"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Script version
-VERSION="1.1.0"
+VERSION="2.0.0"
 
-# Logging functions (defined early for use in parse_args)
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+  echo -e "${BLUE}[INFO]${NC} $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+  echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+  echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+  echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
-# Global variables
 SUFFIX=""
 ADMIN_TOKEN=""
 DB_PASSWORD=""
-DEPLOY_DIR=""
-OS_TYPE=""
+DEPLOY_DIR="${HOME}/.local/share/claude-code-hub"
+STATE_FILE=""
 IMAGE_TAG="latest"
 BRANCH_NAME="main"
 APP_PORT="23000"
+APP_INTERNAL_PORT="${CCH_APP_INTERNAL_PORT}"
+CADDY_HTTP_PORT="${CCH_CADDY_HTTP_PORT}"
+CADDY_HTTPS_PORT="${CCH_CADDY_HTTPS_PORT}"
 UPDATE_MODE=false
 FORCE_NEW=false
+ENABLE_CADDY=false
+NON_INTERACTIVE=false
+APP_URL=""
 
-# CLI argument variables
 BRANCH_ARG=""
 PORT_ARG=""
 TOKEN_ARG=""
 DIR_ARG=""
 DOMAIN_ARG=""
-ENABLE_CADDY=false
-NON_INTERACTIVE=false
+CADDY_HTTP_PORT_ARG=""
+CADDY_HTTPS_PORT_ARG=""
+
+POD_NAME=""
+POSTGRES_CONTAINER=""
+REDIS_CONTAINER=""
+APP_CONTAINER=""
+CADDY_CONTAINER=""
+
+POSTGRES_IMAGE="postgres:18"
+REDIS_IMAGE="redis:7-alpine"
+APP_IMAGE=""
+CADDY_IMAGE="caddy:2-alpine"
 
 show_help() {
-    cat << EOF
-Claude Code Hub - One-Click Deployment Script v${VERSION}
+  cat <<EOF
+Claude Code Hub - Podman One-Click Deployment Script v${VERSION}
 
 Usage: $0 [OPTIONS]
 
 Options:
-  -b, --branch <name>        Branch to deploy: main (default) or dev
-  -p, --port <port>          App external port (default: 23000)
-  -t, --admin-token <token>  Custom admin token (default: auto-generated)
-  -d, --deploy-dir <path>    Custom deployment directory
-      --domain <domain>      Domain for Caddy HTTPS (enables Caddy automatically)
-      --enable-caddy         Enable Caddy reverse proxy without HTTPS (HTTP only)
-      --force-new            Force fresh installation (ignore existing deployment)
-  -y, --yes                  Non-interactive mode (skip prompts, use defaults)
-  -h, --help                 Show this help message
+  -b, --branch <name>            Branch to deploy: main (default) or dev
+  -p, --port <port>              App external port without Caddy (default: 23000)
+  -t, --admin-token <token>      Custom admin token (default: auto-generated)
+  -d, --deploy-dir <path>        Custom deployment directory
+      --domain <domain>          Domain for the optional Caddy proxy
+      --enable-caddy             Enable the optional Caddy reverse proxy
+      --caddy-http-port <port>   Caddy HTTP port (default: 8080)
+      --caddy-https-port <port>  Caddy HTTPS port (default: 8443)
+      --force-new                Force fresh installation (ignore existing deployment)
+  -y, --yes                      Non-interactive mode (skip prompts, use defaults)
+  -h, --help                     Show this help message
 
 Examples:
-  $0                                    # Interactive deployment
-  $0 -y                                 # Non-interactive with defaults
-  $0 -b dev -p 8080 -y                  # Deploy dev branch on port 8080
-  $0 -t "my-secure-token" -y            # Use custom admin token
-  $0 --domain hub.example.com -y        # Deploy with Caddy HTTPS
-  $0 --enable-caddy -y                  # Deploy with Caddy HTTP-only
-  $0 -y                                 # Update existing deployment (auto-detected)
-  $0 --force-new -y                     # Force fresh install even if deployment exists
+  $0
+  $0 -y
+  $0 -b dev -p 24000 -y
+  $0 --enable-caddy --caddy-http-port 18080 --caddy-https-port 18443 -y
+  $0 --domain hub.example.com --enable-caddy -y
 
-For more information, visit: https://github.com/ding113/claude-code-hub
+Official support target: Linux rootless Podman.
 EOF
 }
 
 parse_args() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-            -b|--branch)
-                if [[ -z "${2:-}" ]] || [[ "$2" == -* ]]; then
-                    log_error "Option $1 requires an argument"
-                    exit 1
-                fi
-                BRANCH_ARG="$2"
-                shift 2
-                ;;
-            -p|--port)
-                if [[ -z "${2:-}" ]] || [[ "$2" == -* ]]; then
-                    log_error "Option $1 requires an argument"
-                    exit 1
-                fi
-                PORT_ARG="$2"
-                shift 2
-                ;;
-            -t|--admin-token)
-                if [[ -z "${2:-}" ]] || [[ "$2" == -* ]]; then
-                    log_error "Option $1 requires an argument"
-                    exit 1
-                fi
-                TOKEN_ARG="$2"
-                shift 2
-                ;;
-            -d|--deploy-dir)
-                if [[ -z "${2:-}" ]] || [[ "$2" == -* ]]; then
-                    log_error "Option $1 requires an argument"
-                    exit 1
-                fi
-                DIR_ARG="$2"
-                shift 2
-                ;;
-            --domain)
-                if [[ -z "${2:-}" ]] || [[ "$2" == -* ]]; then
-                    log_error "Option $1 requires an argument"
-                    exit 1
-                fi
-                DOMAIN_ARG="$2"
-                ENABLE_CADDY=true
-                shift 2
-                ;;
-            --enable-caddy)
-                ENABLE_CADDY=true
-                shift
-                ;;
-            --force-new)
-                FORCE_NEW=true
-                shift
-                ;;
-            -y|--yes)
-                NON_INTERACTIVE=true
-                shift
-                ;;
-            -h|--help)
-                show_help
-                exit 0
-                ;;
-            *)
-                log_error "Unknown option: $1"
-                echo ""
-                show_help
-                exit 1
-                ;;
-        esac
-    done
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -b|--branch)
+        BRANCH_ARG="${2:-}"
+        shift 2
+        ;;
+      -p|--port)
+        PORT_ARG="${2:-}"
+        shift 2
+        ;;
+      -t|--admin-token)
+        TOKEN_ARG="${2:-}"
+        shift 2
+        ;;
+      -d|--deploy-dir)
+        DIR_ARG="${2:-}"
+        shift 2
+        ;;
+      --domain)
+        DOMAIN_ARG="${2:-}"
+        ENABLE_CADDY=true
+        shift 2
+        ;;
+      --enable-caddy)
+        ENABLE_CADDY=true
+        shift
+        ;;
+      --caddy-http-port)
+        CADDY_HTTP_PORT_ARG="${2:-}"
+        shift 2
+        ;;
+      --caddy-https-port)
+        CADDY_HTTPS_PORT_ARG="${2:-}"
+        shift 2
+        ;;
+      --force-new)
+        FORCE_NEW=true
+        shift
+        ;;
+      -y|--yes)
+        NON_INTERACTIVE=true
+        shift
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      *)
+        log_error "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+}
+
+validate_port() {
+  local value="$1"
+  local label="$2"
+  if ! [[ "${value}" =~ ^[0-9]+$ ]] || [[ "${value}" -lt 1 ]] || [[ "${value}" -gt 65535 ]]; then
+    log_error "Invalid ${label}: ${value}"
+    exit 1
+  fi
 }
 
 validate_inputs() {
-    # Validate port
-    if [[ -n "$PORT_ARG" ]]; then
-        if ! [[ "$PORT_ARG" =~ ^[0-9]+$ ]] || [[ "$PORT_ARG" -lt 1 ]] || [[ "$PORT_ARG" -gt 65535 ]]; then
-            log_error "Invalid port number: $PORT_ARG (must be 1-65535)"
-            exit 1
-        fi
-        APP_PORT="$PORT_ARG"
-    fi
+  if [[ -n "${PORT_ARG}" ]]; then
+    validate_port "${PORT_ARG}" "port"
+    APP_PORT="${PORT_ARG}"
+  fi
 
-    # Validate admin token length
-    if [[ -n "$TOKEN_ARG" ]]; then
-        if [[ ${#TOKEN_ARG} -lt 16 ]]; then
-            log_error "Admin token too short: minimum 16 characters required"
-            exit 1
-        fi
-        ADMIN_TOKEN="$TOKEN_ARG"
-    fi
+  if [[ -n "${CADDY_HTTP_PORT_ARG}" ]]; then
+    validate_port "${CADDY_HTTP_PORT_ARG}" "Caddy HTTP port"
+    CADDY_HTTP_PORT="${CADDY_HTTP_PORT_ARG}"
+  fi
 
-    # Validate branch
-    if [[ -n "$BRANCH_ARG" ]]; then
-        case "$BRANCH_ARG" in
-            main)
-                IMAGE_TAG="latest"
-                BRANCH_NAME="main"
-                ;;
-            dev)
-                IMAGE_TAG="dev"
-                BRANCH_NAME="dev"
-                ;;
-            *)
-                log_error "Invalid branch: $BRANCH_ARG (must be 'main' or 'dev')"
-                exit 1
-                ;;
-        esac
-    fi
+  if [[ -n "${CADDY_HTTPS_PORT_ARG}" ]]; then
+    validate_port "${CADDY_HTTPS_PORT_ARG}" "Caddy HTTPS port"
+    CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT_ARG}"
+  fi
 
-    # Apply custom deploy directory
-    if [[ -n "$DIR_ARG" ]]; then
-        DEPLOY_DIR="$DIR_ARG"
+  if [[ -n "${TOKEN_ARG}" ]]; then
+    if [[ ${#TOKEN_ARG} -lt 16 ]]; then
+      log_error "Admin token too short: minimum 16 characters required"
+      exit 1
     fi
+    ADMIN_TOKEN="${TOKEN_ARG}"
+  fi
 
-    # Validate domain format if provided
-    if [[ -n "$DOMAIN_ARG" ]]; then
-        if ! [[ "$DOMAIN_ARG" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
-            log_error "Invalid domain format: $DOMAIN_ARG"
-            exit 1
-        fi
+  if [[ -n "${DIR_ARG}" ]]; then
+    DEPLOY_DIR="${DIR_ARG}"
+  fi
+
+  if [[ -n "${BRANCH_ARG}" ]]; then
+    case "${BRANCH_ARG}" in
+      main)
+        IMAGE_TAG="latest"
+        BRANCH_NAME="main"
+        ;;
+      dev)
+        IMAGE_TAG="dev"
+        BRANCH_NAME="dev"
+        ;;
+      *)
+        log_error "Invalid branch: ${BRANCH_ARG}"
+        exit 1
+        ;;
+    esac
+  fi
+
+  if [[ -n "${DOMAIN_ARG}" ]]; then
+    if ! [[ "${DOMAIN_ARG}" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+      log_error "Invalid domain format: ${DOMAIN_ARG}"
+      exit 1
     fi
+  fi
 }
 
 print_header() {
-    echo -e "${BLUE}"
-    echo "+=================================================================+"
-    echo "|                                                                 |"
-    echo "|           Claude Code Hub - One-Click Deployment               |"
-    echo "|                      Version ${VERSION}                             |"
-    echo "|                                                                 |"
-    echo "+=================================================================+"
-    echo -e "${NC}"
+  echo -e "${BLUE}"
+  echo "+=================================================================+"
+  echo "|                                                                 |"
+  echo "|         Claude Code Hub - Podman Deployment Script             |"
+  echo "|                      Version ${VERSION}                             |"
+  echo "|                                                                 |"
+  echo "+=================================================================+"
+  echo -e "${NC}"
 }
 
-detect_os() {
-    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        OS_TYPE="linux"
-        DEPLOY_DIR="/www/compose/claude-code-hub"
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        OS_TYPE="macos"
-        DEPLOY_DIR="$HOME/Applications/claude-code-hub"
-    else
-        log_error "Unsupported operating system: $OSTYPE"
-        exit 1
-    fi
-    log_info "Detected OS: $OS_TYPE"
+check_environment() {
+  cch_require_linux
+  cch_require_podman
+
+  if ! "${PODMAN_BIN}" info --format '{{.Host.Security.Rootless}}' 2>/dev/null | grep -q '^true$'; then
+    log_error "This script only supports rootless Podman."
+    exit 1
+  fi
 }
 
 select_branch() {
-    # Skip if branch already set via CLI or non-interactive mode
-    if [[ -n "$BRANCH_ARG" ]]; then
-        log_info "Using branch from CLI argument: $BRANCH_NAME"
+  if [[ -n "${BRANCH_ARG}" ]]; then
+    return
+  fi
+
+  if [[ "${NON_INTERACTIVE}" == true ]]; then
+    return
+  fi
+
+  echo ""
+  echo -e "${BLUE}Please select the branch to deploy:${NC}"
+  echo -e "  ${GREEN}1)${NC} main   (Stable release - recommended for production)"
+  echo -e "  ${YELLOW}2)${NC} dev    (Latest features - for testing)"
+  echo ""
+
+  local choice
+  while true; do
+    read -r -p "Enter your choice [1]: " choice
+    choice="${choice:-1}"
+    case "${choice}" in
+      1)
+        IMAGE_TAG="latest"
+        BRANCH_NAME="main"
         return
-    fi
-
-    if [[ "$NON_INTERACTIVE" == true ]]; then
-        log_info "Non-interactive mode: using default branch (main)"
+        ;;
+      2)
+        IMAGE_TAG="dev"
+        BRANCH_NAME="dev"
         return
-    fi
-
-    echo ""
-    echo -e "${BLUE}Please select the branch to deploy:${NC}"
-    echo -e "  ${GREEN}1)${NC} main   (Stable release - recommended for production)"
-    echo -e "  ${YELLOW}2)${NC} dev    (Latest features - for testing)"
-    echo ""
-    
-    local choice
-    while true; do
-        read -p "Enter your choice [1]: " choice
-        choice=${choice:-1}
-        
-        case $choice in
-            1)
-                IMAGE_TAG="latest"
-                BRANCH_NAME="main"
-                log_success "Selected branch: main (image tag: latest)"
-                break
-                ;;
-            2)
-                IMAGE_TAG="dev"
-                BRANCH_NAME="dev"
-                log_success "Selected branch: dev (image tag: dev)"
-                break
-                ;;
-            *)
-                log_error "Invalid choice. Please enter 1 or 2."
-                ;;
-        esac
-    done
-}
-
-check_docker() {
-    log_info "Checking Docker installation..."
-    
-    if ! command -v docker &> /dev/null; then
-        log_warning "Docker is not installed"
-        return 1
-    fi
-    
-    if ! docker compose version &> /dev/null && ! docker-compose --version &> /dev/null; then
-        log_warning "Docker Compose is not installed"
-        return 1
-    fi
-    
-    log_success "Docker and Docker Compose are installed"
-    docker --version
-    docker compose version 2>/dev/null || docker-compose --version
-    return 0
-}
-
-install_docker() {
-    log_info "Installing Docker..."
-    
-    if [[ "$OS_TYPE" == "linux" ]]; then
-        if [[ $EUID -ne 0 ]]; then
-            log_error "Docker installation requires root privileges on Linux"
-            log_info "Please run: sudo $0"
-            exit 1
-        fi
-    fi
-    
-    log_info "Downloading Docker installation script from get.docker.com..."
-    local temp_script
-    temp_script=$(mktemp)
-    if curl -fsSL https://get.docker.com -o "$temp_script"; then
-        log_info "Running Docker installation script..."
-        sh "$temp_script"
-        rm -f "$temp_script"
-        
-        if [[ "$OS_TYPE" == "linux" ]]; then
-            log_info "Starting Docker service..."
-            systemctl start docker
-            systemctl enable docker
-            
-            if [[ -n "$SUDO_USER" ]]; then
-                log_info "Adding user $SUDO_USER to docker group..."
-                usermod -aG docker "$SUDO_USER"
-                log_warning "Please log out and log back in for group changes to take effect"
-            fi
-        fi
-        
-        log_success "Docker installed successfully"
-    else
-        log_error "Failed to download Docker installation script"
-        exit 1
-    fi
+        ;;
+      *)
+        log_error "Invalid choice. Please enter 1 or 2."
+        ;;
+    esac
+  done
 }
 
 generate_random_suffix() {
-    SUFFIX=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
-    log_info "Generated random suffix: $SUFFIX"
+  SUFFIX="$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)"
 }
 
 generate_admin_token() {
-    # Skip if token already set via CLI
-    if [[ -n "$ADMIN_TOKEN" ]]; then
-        log_info "Using admin token from CLI argument"
-        return
-    fi
-
-    if command -v openssl &> /dev/null; then
-        ADMIN_TOKEN=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
-    else
-        ADMIN_TOKEN=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)
-    fi
-    log_info "Generated secure admin token"
+  if [[ -n "${ADMIN_TOKEN}" ]]; then
+    return
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    ADMIN_TOKEN="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
+  else
+    ADMIN_TOKEN="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+  fi
 }
 
 generate_db_password() {
-    if command -v openssl &> /dev/null; then
-        DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
-    else
-        DB_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)
-    fi
-    log_info "Generated secure database password"
+  if [[ -n "${DB_PASSWORD}" ]]; then
+    return
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    DB_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)"
+  else
+    DB_PASSWORD="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+  fi
+}
+
+set_runtime_names() {
+  POD_NAME="claude-code-hub-${SUFFIX}"
+  POSTGRES_CONTAINER="claude-code-hub-db-${SUFFIX}"
+  REDIS_CONTAINER="claude-code-hub-redis-${SUFFIX}"
+  APP_CONTAINER="claude-code-hub-app-${SUFFIX}"
+  CADDY_CONTAINER="claude-code-hub-caddy-${SUFFIX}"
+  APP_IMAGE="ghcr.io/ding113/claude-code-hub:${IMAGE_TAG}"
+  STATE_FILE="${DEPLOY_DIR}/.podman-state"
 }
 
 detect_existing_deployment() {
-    if [[ "$FORCE_NEW" == true ]]; then
-        log_info "Force-new flag set, skipping existing deployment detection"
-        return 1
-    fi
-    if [[ -f "$DEPLOY_DIR/.env" ]] && [[ -f "$DEPLOY_DIR/docker-compose.yaml" ]]; then
-        log_info "Detected existing deployment in $DEPLOY_DIR"
-        UPDATE_MODE=true
-        return 0
-    fi
+  if [[ "${FORCE_NEW}" == true ]]; then
     return 1
+  fi
+
+  if [[ -f "${DEPLOY_DIR}/.env" && -f "${DEPLOY_DIR}/.podman-state" ]]; then
+    UPDATE_MODE=true
+    return 0
+  fi
+
+  return 1
 }
 
-extract_suffix_from_compose() {
-    local compose_file="$DEPLOY_DIR/docker-compose.yaml"
-    SUFFIX=$(sed -n 's/.*container_name: claude-code-hub-db-\([a-z0-9]*\)/\1/p' "$compose_file" | head -1)
-    if [[ -z "$SUFFIX" ]]; then
-        log_warning "Could not extract suffix from docker-compose.yaml, generating new one"
-        generate_random_suffix
-        return
-    fi
-    log_info "Using existing suffix: $SUFFIX"
+load_state_file() {
+  source "${DEPLOY_DIR}/.podman-state"
 }
 
-load_existing_env() {
-    local env_file="$DEPLOY_DIR/.env"
+load_existing_config() {
+  load_state_file
+  SUFFIX="${SUFFIX:-${STATE_SUFFIX:-}}"
+  POD_NAME="${POD_NAME:-claude-code-hub-${SUFFIX}}"
+  POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-claude-code-hub-db-${SUFFIX}}"
+  REDIS_CONTAINER="${REDIS_CONTAINER:-claude-code-hub-redis-${SUFFIX}}"
+  APP_CONTAINER="${APP_CONTAINER:-claude-code-hub-app-${SUFFIX}}"
+  CADDY_CONTAINER="${CADDY_CONTAINER:-claude-code-hub-caddy-${SUFFIX}}"
 
-    # Load DB_PASSWORD
-    local existing_db_pw
-    existing_db_pw=$(grep '^DB_PASSWORD=' "$env_file" | head -1 | cut -d'=' -f2-)
-    if [[ -n "$existing_db_pw" ]]; then
-        DB_PASSWORD="$existing_db_pw"
-        log_info "Preserved existing database password"
-    else
-        log_warning "DB_PASSWORD not found in existing .env, generating new one"
-        generate_db_password
-    fi
-
-    # Load ADMIN_TOKEN (CLI argument takes priority)
-    if [[ -z "$ADMIN_TOKEN" ]]; then
-        local existing_token
-        existing_token=$(grep '^ADMIN_TOKEN=' "$env_file" | head -1 | cut -d'=' -f2-)
-        if [[ -n "$existing_token" ]]; then
-            ADMIN_TOKEN="$existing_token"
-            log_info "Preserved existing admin token"
-        else
-            log_warning "ADMIN_TOKEN not found in existing .env, generating new one"
-            generate_admin_token
-        fi
-    fi
-
-    # Load APP_PORT (CLI argument takes priority)
-    if [[ -z "$PORT_ARG" ]]; then
-        local existing_port
-        existing_port=$(grep '^APP_PORT=' "$env_file" | head -1 | cut -d'=' -f2-)
-        if [[ -n "$existing_port" ]]; then
-            APP_PORT="$existing_port"
-        fi
-    fi
+  if [[ -f "${DEPLOY_DIR}/.env" ]]; then
+    local existing_db_pw existing_token existing_app_port existing_http_port existing_https_port
+    existing_db_pw="$(grep '^DB_PASSWORD=' "${DEPLOY_DIR}/.env" | head -1 | cut -d'=' -f2-)"
+    existing_token="$(grep '^ADMIN_TOKEN=' "${DEPLOY_DIR}/.env" | head -1 | cut -d'=' -f2-)"
+    existing_app_port="$(grep '^APP_PORT=' "${DEPLOY_DIR}/.env" | head -1 | cut -d'=' -f2-)"
+    existing_http_port="$(grep '^CADDY_HTTP_PORT=' "${DEPLOY_DIR}/.env" | head -1 | cut -d'=' -f2-)"
+    existing_https_port="$(grep '^CADDY_HTTPS_PORT=' "${DEPLOY_DIR}/.env" | head -1 | cut -d'=' -f2-)"
+    DB_PASSWORD="${DB_PASSWORD:-${existing_db_pw}}"
+    ADMIN_TOKEN="${ADMIN_TOKEN:-${existing_token}}"
+    APP_PORT="${PORT_ARG:-${existing_app_port:-${APP_PORT}}}"
+    CADDY_HTTP_PORT="${CADDY_HTTP_PORT_ARG:-${existing_http_port:-${CADDY_HTTP_PORT}}}"
+    CADDY_HTTPS_PORT="${CADDY_HTTPS_PORT_ARG:-${existing_https_port:-${CADDY_HTTPS_PORT}}}"
+  fi
 }
 
 create_deployment_dir() {
-    log_info "Creating deployment directory: $DEPLOY_DIR"
-    
-    if [[ "$OS_TYPE" == "linux" ]] && [[ ! -d "/www" ]]; then
-        if [[ $EUID -ne 0 ]]; then
-            log_error "Creating /www directory requires root privileges"
-            log_info "Please run: sudo $0"
-            exit 1
-        fi
-        mkdir -p "$DEPLOY_DIR"
-        if [[ -n "$SUDO_USER" ]]; then
-            chown -R "$SUDO_USER:$SUDO_USER" /www
-        fi
-    else
-        mkdir -p "$DEPLOY_DIR"
-    fi
-    
-    mkdir -p "$DEPLOY_DIR/data/postgres"
-    mkdir -p "$DEPLOY_DIR/data/redis"
-    
-    log_success "Deployment directory created"
+  mkdir -p "${DEPLOY_DIR}/data/postgres" "${DEPLOY_DIR}/data/redis"
+  if [[ "${ENABLE_CADDY}" == true ]]; then
+    mkdir -p "${DEPLOY_DIR}/data/caddy-data" "${DEPLOY_DIR}/data/caddy-config"
+  fi
 }
 
-write_compose_file() {
-    log_info "Writing docker-compose.yaml..."
-    
-    # Determine app ports configuration
-    local app_ports_config
-    if [[ "$ENABLE_CADDY" == true ]]; then
-        # When Caddy is enabled, don't expose app port externally
-        app_ports_config=""
-    else
-        app_ports_config="ports:
-      - \"\${APP_PORT:-${APP_PORT}}:\${APP_PORT:-${APP_PORT}}\""
-    fi
+prepare_bind_mount_ownership() {
+  cch_namespace_chown "${DEPLOY_DIR}/data/postgres" 999 999
 
-    cat > "$DEPLOY_DIR/docker-compose.yaml" << EOF
-services:
-  postgres:
-    image: postgres:18
-    container_name: claude-code-hub-db-${SUFFIX}
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:35432:5432"
-    env_file:
-      - ./.env
-    environment:
-      POSTGRES_USER: \${DB_USER:-postgres}
-      POSTGRES_PASSWORD: \${DB_PASSWORD:-postgres}
-      POSTGRES_DB: \${DB_NAME:-claude_code_hub}
-      PGDATA: /data/pgdata
-      TZ: Asia/Shanghai
-      PGTZ: Asia/Shanghai
-    volumes:
-      - ./data/postgres:/data
-    networks:
-      - claude-code-hub-net-${SUFFIX}
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \${DB_USER:-postgres} -d \${DB_NAME:-claude_code_hub}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+  local redis_ids
+  redis_ids="$(cch_resolve_image_uid_gid "${REDIS_IMAGE}" 999 999)"
+  cch_namespace_chown "${DEPLOY_DIR}/data/redis" "${redis_ids%%:*}" "${redis_ids##*:}"
 
-  redis:
-    image: redis:7-alpine
-    container_name: claude-code-hub-redis-${SUFFIX}
-    restart: unless-stopped
-    volumes:
-      - ./data/redis:/data
-    command: redis-server --appendonly yes
-    networks:
-      - claude-code-hub-net-${SUFFIX}
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 5s
-
-  app:
-    image: ghcr.io/ding113/claude-code-hub:${IMAGE_TAG}
-    container_name: claude-code-hub-app-${SUFFIX}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - ./.env
-    environment:
-      NODE_ENV: production
-      PORT: \${APP_PORT:-${APP_PORT}}
-      DSN: postgresql://\${DB_USER:-postgres}:\${DB_PASSWORD:-postgres}@claude-code-hub-db-${SUFFIX}:5432/\${DB_NAME:-claude_code_hub}
-      REDIS_URL: redis://claude-code-hub-redis-${SUFFIX}:6379
-      AUTO_MIGRATE: \${AUTO_MIGRATE:-true}
-      ENABLE_RATE_LIMIT: \${ENABLE_RATE_LIMIT:-true}
-      SESSION_TTL: \${SESSION_TTL:-300}
-      TZ: Asia/Shanghai
-EOF
-
-    # Add app ports only if Caddy is not enabled
-    if [[ "$ENABLE_CADDY" != true ]]; then
-        cat >> "$DEPLOY_DIR/docker-compose.yaml" << EOF
-    ports:
-      - "\${APP_PORT:-${APP_PORT}}:\${APP_PORT:-${APP_PORT}}"
-EOF
-    fi
-
-    cat >> "$DEPLOY_DIR/docker-compose.yaml" << EOF
-    restart: unless-stopped
-    networks:
-      - claude-code-hub-net-${SUFFIX}
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:\${APP_PORT:-${APP_PORT}}/api/actions/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-EOF
-
-    # Add Caddy service if enabled
-    if [[ "$ENABLE_CADDY" == true ]]; then
-        cat >> "$DEPLOY_DIR/docker-compose.yaml" << EOF
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: claude-code-hub-caddy-${SUFFIX}
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      app:
-        condition: service_healthy
-    networks:
-      - claude-code-hub-net-${SUFFIX}
-EOF
-    fi
-
-    cat >> "$DEPLOY_DIR/docker-compose.yaml" << EOF
-
-networks:
-  claude-code-hub-net-${SUFFIX}:
-    driver: bridge
-    name: claude-code-hub-net-${SUFFIX}
-EOF
-
-    # Add Caddy volumes if enabled
-    if [[ "$ENABLE_CADDY" == true ]]; then
-        cat >> "$DEPLOY_DIR/docker-compose.yaml" << EOF
-
-volumes:
-  caddy_data:
-  caddy_config:
-EOF
-    fi
-    
-    log_success "docker-compose.yaml created"
-}
-
-write_caddyfile() {
-    if [[ "$ENABLE_CADDY" != true ]]; then
-        return
-    fi
-
-    log_info "Writing Caddyfile..."
-
-    if [[ -n "$DOMAIN_ARG" ]]; then
-        # HTTPS mode with domain (Let's Encrypt automatic)
-        cat > "$DEPLOY_DIR/Caddyfile" << EOF
-${DOMAIN_ARG} {
-    reverse_proxy app:${APP_PORT}
-    encode gzip
-}
-EOF
-        log_success "Caddyfile created (HTTPS mode with domain: $DOMAIN_ARG)"
-    else
-        # HTTP-only mode
-        cat > "$DEPLOY_DIR/Caddyfile" << EOF
-:80 {
-    reverse_proxy app:${APP_PORT}
-    encode gzip
-}
-EOF
-        log_success "Caddyfile created (HTTP-only mode)"
-    fi
+  if [[ "${ENABLE_CADDY}" == true ]]; then
+    local caddy_ids
+    caddy_ids="$(cch_resolve_image_uid_gid "${CADDY_IMAGE}" 1000 1000)"
+    cch_namespace_chown "${DEPLOY_DIR}/data/caddy-data" "${caddy_ids%%:*}" "${caddy_ids##*:}"
+    cch_namespace_chown "${DEPLOY_DIR}/data/caddy-config" "${caddy_ids%%:*}" "${caddy_ids##*:}"
+  fi
 }
 
 write_env_file() {
-    log_info "Writing .env file..."
+  local secure_cookies="true"
+  if [[ "${ENABLE_CADDY}" == true ]]; then
+    if [[ -n "${DOMAIN_ARG}" ]]; then
+      APP_URL="https://${DOMAIN_ARG}:${CADDY_HTTPS_PORT}"
+    fi
+  elif [[ -z "${APP_URL}" ]]; then
+    APP_URL="http://127.0.0.1:${APP_PORT}"
+  fi
 
-    # Update mode: backup existing .env, then restore custom variables after writing
-    local backup_file=""
-    if [[ "$UPDATE_MODE" == true ]] && [[ -f "$DEPLOY_DIR/.env" ]]; then
-        backup_file="$DEPLOY_DIR/.env.bak"
-        cp "$DEPLOY_DIR/.env" "$backup_file"
-        log_info "Backed up existing .env to .env.bak"
-    fi
-    
-    # Determine secure cookies setting based on Caddy and domain
-    local secure_cookies="true"
-    if [[ "$ENABLE_CADDY" == true ]] && [[ -z "$DOMAIN_ARG" ]]; then
-        # HTTP-only Caddy mode - disable secure cookies
-        secure_cookies="false"
-    fi
-
-    # If domain is set, APP_URL should use https
-    local app_url=""
-    if [[ -n "$DOMAIN_ARG" ]]; then
-        app_url="https://${DOMAIN_ARG}"
-    fi
-    
-    cat > "$DEPLOY_DIR/.env" << EOF
-# Admin Token (KEEP THIS SECRET!)
+  cat > "${DEPLOY_DIR}/.env" <<EOF
 ADMIN_TOKEN=${ADMIN_TOKEN}
-
-# Database Configuration
 DB_USER=postgres
 DB_PASSWORD=${DB_PASSWORD}
 DB_NAME=claude_code_hub
-
-# Application Configuration
 APP_PORT=${APP_PORT}
-APP_URL=${app_url}
-
-# Auto Migration (enabled for first-time setup)
+APP_URL=${APP_URL}
 AUTO_MIGRATE=true
-
-# Redis Configuration
 ENABLE_RATE_LIMIT=true
-
-# Session Configuration
 SESSION_TTL=300
 STORE_SESSION_MESSAGES=false
 STORE_SESSION_RESPONSE_BODY=true
-
-# Cookie Security
 ENABLE_SECURE_COOKIES=${secure_cookies}
-
-# Circuit Breaker Configuration
 ENABLE_CIRCUIT_BREAKER_ON_NETWORK_ERRORS=false
 ENABLE_ENDPOINT_CIRCUIT_BREAKER=false
-
-# Environment
 NODE_ENV=production
 TZ=Asia/Shanghai
 LOG_LEVEL=info
+CADDY_HTTP_PORT=${CADDY_HTTP_PORT}
+CADDY_HTTPS_PORT=${CADDY_HTTPS_PORT}
 EOF
 
-    # Restore user custom variables from backup (variables not managed by this script)
-    if [[ -n "$backup_file" ]] && [[ -f "$backup_file" ]]; then
-        local managed_keys="ADMIN_TOKEN|DB_USER|DB_PASSWORD|DB_NAME|APP_PORT|APP_URL|AUTO_MIGRATE|ENABLE_RATE_LIMIT|SESSION_TTL|STORE_SESSION_MESSAGES|STORE_SESSION_RESPONSE_BODY|ENABLE_SECURE_COOKIES|ENABLE_CIRCUIT_BREAKER_ON_NETWORK_ERRORS|ENABLE_ENDPOINT_CIRCUIT_BREAKER|NODE_ENV|TZ|LOG_LEVEL"
-        local custom_vars
-        custom_vars=$(grep -v '^\s*#' "$backup_file" | grep -v '^\s*$' | grep -vE "^($managed_keys)=" || true)
-        if [[ -n "$custom_vars" ]]; then
-            echo "" >> "$DEPLOY_DIR/.env"
-            echo "# User Custom Configuration (preserved from previous deployment)" >> "$DEPLOY_DIR/.env"
-            echo "$custom_vars" >> "$DEPLOY_DIR/.env"
-            log_info "Preserved $(echo "$custom_vars" | wc -l | tr -d ' ') custom environment variables"
-        fi
-    fi
-
-    # W-015: restrict .env file permissions to prevent sensitive data leaks
-    chmod 600 "$DEPLOY_DIR/.env"
-
-    log_success ".env file created"
+  chmod 600 "${DEPLOY_DIR}/.env"
 }
 
-start_services() {
-    log_info "Starting Docker services..."
-    
-    cd "$DEPLOY_DIR"
-    
-    if docker compose version &> /dev/null; then
-        docker compose pull
-        docker compose up -d
-    else
-        docker-compose pull
-        docker-compose up -d
-    fi
-    
-    log_success "Docker services started"
+write_state_file() {
+  cat > "${DEPLOY_DIR}/.podman-state" <<EOF
+DEPLOY_DIR=${DEPLOY_DIR}
+SUFFIX=${SUFFIX}
+STATE_SUFFIX=${SUFFIX}
+POD_NAME=${POD_NAME}
+POSTGRES_CONTAINER=${POSTGRES_CONTAINER}
+REDIS_CONTAINER=${REDIS_CONTAINER}
+APP_CONTAINER=${APP_CONTAINER}
+CADDY_CONTAINER=${CADDY_CONTAINER}
+IMAGE_TAG=${IMAGE_TAG}
+BRANCH_NAME=${BRANCH_NAME}
+APP_PORT=${APP_PORT}
+CADDY_HTTP_PORT=${CADDY_HTTP_PORT}
+CADDY_HTTPS_PORT=${CADDY_HTTPS_PORT}
+ENABLE_CADDY=${ENABLE_CADDY}
+DOMAIN_ARG=${DOMAIN_ARG}
+EOF
+}
+
+write_caddyfile() {
+  if [[ "${ENABLE_CADDY}" != true ]]; then
+    return
+  fi
+
+  local http_host=":${CADDY_HTTP_PORT}"
+  local https_host=":${CADDY_HTTPS_PORT}"
+  if [[ -n "${DOMAIN_ARG}" ]]; then
+    http_host="${DOMAIN_ARG}:${CADDY_HTTP_PORT}"
+    https_host="${DOMAIN_ARG}:${CADDY_HTTPS_PORT}"
+  fi
+
+  cat > "${DEPLOY_DIR}/Caddyfile" <<EOF
+${http_host} {
+    reverse_proxy 127.0.0.1:${APP_INTERNAL_PORT}
+    encode gzip
+}
+
+${https_host} {
+    tls internal
+    reverse_proxy 127.0.0.1:${APP_INTERNAL_PORT}
+    encode gzip
+}
+EOF
+}
+
+remove_existing_pod() {
+  if cch_pod_exists "${POD_NAME}"; then
+    "${PODMAN_BIN}" pod rm -f "${POD_NAME}" >/dev/null 2>&1 || true
+  fi
+}
+
+create_pod() {
+  remove_existing_pod
+  mapfile -t pod_port_args < <(cch_emit_pod_ports app "${APP_PORT}" "${ENABLE_CADDY}" "${CADDY_HTTP_PORT}" "${CADDY_HTTPS_PORT}")
+  "${PODMAN_BIN}" pod create --name "${POD_NAME}" "${pod_port_args[@]}" >/dev/null
+}
+
+create_postgres_container() {
+  "${PODMAN_BIN}" run -d \
+    --name "${POSTGRES_CONTAINER}" \
+    --pod "${POD_NAME}" \
+    --env-file "${DEPLOY_DIR}/.env" \
+    -e "POSTGRES_USER=postgres" \
+    -e "POSTGRES_PASSWORD=${DB_PASSWORD}" \
+    -e "POSTGRES_DB=claude_code_hub" \
+    -e "PGDATA=/data/pgdata" \
+    -e "TZ=Asia/Shanghai" \
+    -e "PGTZ=Asia/Shanghai" \
+    -v "$(cch_bind_mount_arg "${DEPLOY_DIR}/data/postgres" "/data" private)" \
+    "${POSTGRES_IMAGE}" >/dev/null
+}
+
+create_redis_container() {
+  "${PODMAN_BIN}" run -d \
+    --name "${REDIS_CONTAINER}" \
+    --pod "${POD_NAME}" \
+    -v "$(cch_bind_mount_arg "${DEPLOY_DIR}/data/redis" "/data" private)" \
+    "${REDIS_IMAGE}" \
+    redis-server --appendonly yes >/dev/null
+}
+
+create_app_container() {
+  "${PODMAN_BIN}" run -d \
+    --name "${APP_CONTAINER}" \
+    --pod "${POD_NAME}" \
+    --env-file "${DEPLOY_DIR}/.env" \
+    -e NODE_ENV=production \
+    -e PORT="${APP_INTERNAL_PORT}" \
+    -e DSN="postgresql://postgres:${DB_PASSWORD}@127.0.0.1:5432/claude_code_hub" \
+    -e REDIS_URL="redis://127.0.0.1:6379" \
+    -e TZ=Asia/Shanghai \
+    "${APP_IMAGE}" >/dev/null
+}
+
+create_caddy_container() {
+  if [[ "${ENABLE_CADDY}" != true ]]; then
+    return
+  fi
+
+  "${PODMAN_BIN}" run -d \
+    --name "${CADDY_CONTAINER}" \
+    --pod "${POD_NAME}" \
+    -v "$(cch_bind_mount_arg "${DEPLOY_DIR}/Caddyfile" "/etc/caddy/Caddyfile" private)" \
+    -v "$(cch_bind_mount_arg "${DEPLOY_DIR}/data/caddy-data" "/data" private)" \
+    -v "$(cch_bind_mount_arg "${DEPLOY_DIR}/data/caddy-config" "/config" private)" \
+    "${CADDY_IMAGE}" >/dev/null
 }
 
 wait_for_health() {
-    log_info "Waiting for services to become healthy (max 60 seconds)..."
-    
-    cd "$DEPLOY_DIR"
-    
-    local max_attempts=12
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        attempt=$((attempt + 1))
-        
-        local postgres_health=$(docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-db-${SUFFIX}" 2>/dev/null || echo "unknown")
-        local redis_health=$(docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-redis-${SUFFIX}" 2>/dev/null || echo "unknown")
-        local app_health=$(docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-app-${SUFFIX}" 2>/dev/null || echo "unknown")
-        
-        log_info "Health status - Postgres: $postgres_health, Redis: $redis_health, App: $app_health"
-        
-        if [[ "$postgres_health" == "healthy" ]] && [[ "$redis_health" == "healthy" ]] && [[ "$app_health" == "healthy" ]]; then
-            log_success "All services are healthy!"
-            return 0
-        fi
-        
-        if [ $attempt -lt $max_attempts ]; then
-            sleep 5
-        fi
-    done
-    
-    log_warning "Services did not become healthy within 60 seconds"
-    log_info "You can check the logs with: cd $DEPLOY_DIR && docker compose logs -f"
-    return 1
+  cch_wait_for_postgres "${POSTGRES_CONTAINER}" "postgres" "claude_code_hub"
+  cch_wait_for_redis "${REDIS_CONTAINER}"
+  cch_wait_for_container_http "${APP_CONTAINER}" "http://127.0.0.1:${APP_INTERNAL_PORT}/api/actions/health" "App"
+  if [[ "${ENABLE_CADDY}" == true ]]; then
+    cch_wait_for_host_http "http://127.0.0.1:${CADDY_HTTP_PORT}/api/actions/health" "Caddy proxy" "${CADDY_CONTAINER}"
+  else
+    cch_wait_for_host_http "http://127.0.0.1:${APP_PORT}/api/actions/health" "App" "${APP_CONTAINER}"
+  fi
 }
 
-get_network_addresses() {
-    local addresses=()
-    
-    if [[ "$OS_TYPE" == "linux" ]]; then
-        if command -v ip &> /dev/null; then
-            while IFS= read -r line; do
-                addresses+=("$line")
-            done < <(ip addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | grep -v '^172\.17\.' | grep -v '^169\.254\.')
-        elif command -v ifconfig &> /dev/null; then
-            while IFS= read -r line; do
-                addresses+=("$line")
-            done < <(ifconfig 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '^127\.' | grep -v '^172\.17\.' | grep -v '^169\.254\.')
-        fi
-    elif [[ "$OS_TYPE" == "macos" ]]; then
-        while IFS= read -r line; do
-            addresses+=("$line")
-        done < <(ifconfig 2>/dev/null | grep 'inet ' | awk '{print $2}' | grep -v '^127\.' | grep -v '^169\.254\.')
-    fi
-    
-    addresses+=("localhost")
-    
-    printf '%s\n' "${addresses[@]}"
+start_services() {
+  log_info "Creating Podman pod and containers..."
+  create_pod
+  create_postgres_container
+  create_redis_container
+  create_app_container
+  create_caddy_container
+  wait_for_health
+  log_success "Deployment completed successfully"
 }
 
-print_success_message() {
-    local addresses=($(get_network_addresses))
-    
-    echo ""
-    echo -e "${GREEN}+================================================================+${NC}"
-    echo -e "${GREEN}|                                                                |${NC}"
-    if [[ "$UPDATE_MODE" == true ]]; then
-        echo -e "${GREEN}|          Claude Code Hub Updated Successfully!                |${NC}"
-    else
-        echo -e "${GREEN}|          Claude Code Hub Deployed Successfully!               |${NC}"
+print_summary() {
+  echo ""
+  log_success "Claude Code Hub is ready"
+  if [[ "${ENABLE_CADDY}" == true ]]; then
+    echo -e "  HTTP:  ${GREEN}http://127.0.0.1:${CADDY_HTTP_PORT}${NC}"
+    echo -e "  HTTPS: ${GREEN}https://127.0.0.1:${CADDY_HTTPS_PORT}${NC}"
+    if [[ -n "${DOMAIN_ARG}" ]]; then
+      echo -e "  Domain: ${GREEN}${DOMAIN_ARG}${NC}"
+      log_warning "Rootless high-port Caddy uses high ports only; HTTP-01 ACME is not available."
     fi
-    echo -e "${GREEN}|                                                                |${NC}"
-    echo -e "${GREEN}+================================================================+${NC}"
-    echo ""
-    echo -e "${BLUE}Deployment Directory:${NC}"
-    echo -e "   $DEPLOY_DIR"
-    echo ""
-    echo -e "${BLUE}Access URLs:${NC}"
-
-    if [[ "$ENABLE_CADDY" == true ]]; then
-        if [[ -n "$DOMAIN_ARG" ]]; then
-            # HTTPS mode with domain
-            echo -e "   ${GREEN}https://${DOMAIN_ARG}${NC}"
-        else
-            # HTTP-only Caddy mode
-            for addr in "${addresses[@]}"; do
-                echo -e "   ${GREEN}http://${addr}${NC}"
-            done
-        fi
-    else
-        # Direct app access
-        for addr in "${addresses[@]}"; do
-            echo -e "   ${GREEN}http://${addr}:${APP_PORT}${NC}"
-        done
-    fi
-
-    echo ""
-
-    # In update mode, skip printing the admin token (user already knows it)
-    if [[ "$UPDATE_MODE" != true ]]; then
-        echo -e "${BLUE}Admin Token (KEEP THIS SECRET!):${NC}"
-        echo -e "   ${YELLOW}${ADMIN_TOKEN}${NC}"
-        echo ""
-    fi
-
-    echo -e "${BLUE}Usage Documentation:${NC}"
-    if [[ "$ENABLE_CADDY" == true ]] && [[ -n "$DOMAIN_ARG" ]]; then
-        echo -e "   Chinese: ${GREEN}https://${DOMAIN_ARG}/zh-CN/usage-doc${NC}"
-        echo -e "   English: ${GREEN}https://${DOMAIN_ARG}/en-US/usage-doc${NC}"
-    else
-        local first_addr="${addresses[0]}"
-        local port_suffix=""
-        if [[ "$ENABLE_CADDY" != true ]]; then
-            port_suffix=":${APP_PORT}"
-        fi
-        echo -e "   Chinese: ${GREEN}http://${first_addr}${port_suffix}/zh-CN/usage-doc${NC}"
-        echo -e "   English: ${GREEN}http://${first_addr}${port_suffix}/en-US/usage-doc${NC}"
-    fi
-    echo ""
-    echo -e "${BLUE}Useful Commands:${NC}"
-    echo -e "   View logs:    ${YELLOW}cd $DEPLOY_DIR && docker compose logs -f${NC}"
-    echo -e "   Stop services: ${YELLOW}cd $DEPLOY_DIR && docker compose down${NC}"
-    echo -e "   Restart:      ${YELLOW}cd $DEPLOY_DIR && docker compose restart${NC}"
-
-    if [[ "$ENABLE_CADDY" == true ]]; then
-        echo ""
-        echo -e "${BLUE}Caddy Configuration:${NC}"
-        if [[ -n "$DOMAIN_ARG" ]]; then
-            echo -e "   Mode: HTTPS with Let's Encrypt (domain: $DOMAIN_ARG)"
-            echo -e "   Ports: 80 (HTTP redirect), 443 (HTTPS)"
-        else
-            echo -e "   Mode: HTTP-only reverse proxy"
-            echo -e "   Port: 80"
-        fi
-    fi
-
-    echo ""
-    if [[ "$UPDATE_MODE" != true ]]; then
-        echo -e "${RED}IMPORTANT: Please save the admin token in a secure location!${NC}"
-    else
-        echo -e "${BLUE}NOTE: Your existing secrets and custom configuration have been preserved.${NC}"
-    fi
-    echo ""
+  else
+    echo -e "  App: ${GREEN}http://127.0.0.1:${APP_PORT}${NC}"
+  fi
+  echo -e "  Admin Token: ${YELLOW}${ADMIN_TOKEN}${NC}"
+  echo ""
+  echo "Useful commands:"
+  echo -e "  Logs:    ${YELLOW}podman pod logs -f ${POD_NAME}${NC}"
+  echo -e "  Stop:    ${YELLOW}podman pod stop ${POD_NAME}${NC}"
+  echo -e "  Start:   ${YELLOW}podman pod start ${POD_NAME}${NC}"
+  echo -e "  Restart: ${YELLOW}podman pod restart ${POD_NAME}${NC}"
+  echo -e "  Remove:  ${YELLOW}podman pod rm -f ${POD_NAME}${NC}"
+  echo ""
 }
 
 main() {
-    # Parse CLI arguments first
-    parse_args "$@"
-    
-    print_header
-    
-    detect_os
-    
-    # Apply CLI overrides after OS detection (for deploy dir)
-    validate_inputs
-    
-    if ! check_docker; then
-        log_warning "Docker is not installed. Attempting to install..."
-        install_docker
-        
-        if ! check_docker; then
-            log_error "Docker installation failed. Please install Docker manually."
-            exit 1
-        fi
-    fi
-    
-    select_branch
+  print_header
+  parse_args "$@"
+  validate_inputs
+  check_environment
+  select_branch
 
-    # Key branch: detect existing deployment
-    if detect_existing_deployment; then
-        log_info "=== UPDATE MODE ==="
-        log_info "Updating existing deployment (secrets and custom config will be preserved)"
-        extract_suffix_from_compose
-        load_existing_env
-    else
-        log_info "=== FRESH INSTALL MODE ==="
-        generate_random_suffix
-        generate_admin_token
-        generate_db_password
-    fi
-    
-    create_deployment_dir
-    write_compose_file
-    write_caddyfile
-    write_env_file
-    
-    start_services
-    
-    if wait_for_health; then
-        print_success_message
-    else
-        if [[ "$UPDATE_MODE" == true ]]; then
-            log_warning "Update completed but some services may not be fully healthy yet"
-        else
-            log_warning "Deployment completed but some services may not be fully healthy yet"
-        fi
-        log_info "Please check the logs: cd $DEPLOY_DIR && docker compose logs -f"
-        print_success_message
-    fi
+  if detect_existing_deployment; then
+    log_info "Existing Podman deployment detected in ${DEPLOY_DIR}"
+    load_existing_config
+  else
+    generate_random_suffix
+  fi
+
+  generate_admin_token
+  generate_db_password
+  set_runtime_names
+  create_deployment_dir
+  prepare_bind_mount_ownership
+  write_env_file
+  write_state_file
+  write_caddyfile
+  start_services
+  print_summary
 }
 
 main "$@"

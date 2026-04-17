@@ -7,34 +7,62 @@ import { getDatabaseConfig } from "./db-config";
 
 export type ExportMode = "full" | "excludeLogs" | "ledgerOnly";
 
-/**
- * Parse PG_COMPOSE_EXEC env var into a command array for docker compose exec.
- * Returns null when unset (direct mode -- pg tools must exist on the host PATH).
- */
-export function getDockerComposeExec(): string[] | null {
-  const cmd = process.env.PG_COMPOSE_EXEC;
-  if (!cmd) return null;
-  return cmd.split(/\s+/);
+function parseCommand(command?: string): string[] | null {
+  if (!command) return null;
+  const parsed = command.split(/\s+/).filter(Boolean);
+  return parsed.length > 0 ? parsed : null;
 }
 
 /**
- * Spawn a PostgreSQL CLI tool, routing through docker compose exec when
- * PG_COMPOSE_EXEC is set.
+ * Parse PG_CONTAINER_EXEC into a command array.
+ *
+ * Example:
+ *   podman exec cch-dev-postgres
  */
-export function spawnPgTool(
+export function getContainerExecCommand(): string[] | null {
+  return parseCommand(process.env.PG_CONTAINER_EXEC);
+}
+
+/**
+ * Temporary compatibility layer for the old docker compose based variable.
+ */
+function getLegacyComposeExecCommand(): string[] | null {
+  return parseCommand(process.env.PG_COMPOSE_EXEC);
+}
+
+function spawnWithContainerExec(
+  containerExec: string[],
   command: string,
   args: string[],
   env: Record<string, string>,
   options?: { stdin?: boolean }
 ) {
-  const composeExec = getDockerComposeExec();
+  const [runtime, ...execArgsWithContainer] = containerExec;
+  const containerName = execArgsWithContainer.at(-1);
+  const baseExecArgs = execArgsWithContainer.slice(0, -1);
 
-  if (!composeExec) {
-    return spawn(command, args, {
-      env: { ...process.env, ...env },
-    });
+  if (!runtime || !containerName) {
+    throw new Error("PG_CONTAINER_EXEC must include both the runtime and container name.");
   }
 
+  const execFlags: string[] = [];
+  if (options?.stdin) execFlags.push("-i");
+  if (env.PGPASSWORD) {
+    execFlags.push("-e", `PGPASSWORD=${env.PGPASSWORD}`);
+  }
+
+  return spawn(runtime, [...baseExecArgs, ...execFlags, containerName, command, ...args], {
+    env: { ...process.env },
+  });
+}
+
+function spawnWithLegacyComposeExec(
+  composeExec: string[],
+  command: string,
+  args: string[],
+  env: Record<string, string>,
+  options?: { stdin?: boolean }
+) {
   const execFlags = ["-T"];
   if (options?.stdin) execFlags.push("-i");
   if (env.PGPASSWORD) {
@@ -46,6 +74,31 @@ export function spawnPgTool(
     [...composeExec.slice(1), "exec", ...execFlags, "postgres", command, ...args],
     { env: { ...process.env } }
   );
+}
+
+/**
+ * Spawn a PostgreSQL CLI tool either directly on the host or by routing the
+ * execution through a container runtime command.
+ */
+export function spawnPgTool(
+  command: string,
+  args: string[],
+  env: Record<string, string>,
+  options?: { stdin?: boolean }
+) {
+  const containerExec = getContainerExecCommand();
+  if (containerExec) {
+    return spawnWithContainerExec(containerExec, command, args, env, options);
+  }
+
+  const legacyComposeExec = getLegacyComposeExecCommand();
+  if (legacyComposeExec) {
+    return spawnWithLegacyComposeExec(legacyComposeExec, command, args, env, options);
+  }
+
+  return spawn(command, args, {
+    env: { ...process.env, ...env },
+  });
 }
 
 /**
@@ -69,15 +122,13 @@ export function executePgDump(mode: ExportMode = "full"): ReadableStream<Uint8Ar
     dbConfig.user,
     "-d",
     dbConfig.database,
-    "-Fc", // Custom format (compressed)
-    "-v", // Verbose
+    "-Fc",
+    "-v",
   ];
 
   if (mode === "excludeLogs") {
-    // 保留表结构但不导出数据
     args.push("--exclude-table-data=message_request");
   } else if (mode === "ledgerOnly") {
-    // 完全排除 message_request 表（结构和数据）
     args.push("--exclude-table=message_request");
   }
 
@@ -95,17 +146,14 @@ export function executePgDump(mode: ExportMode = "full"): ReadableStream<Uint8Ar
 
   return new ReadableStream({
     start(controller) {
-      // 监听 stdout (数据输出)
       pgProcess.stdout.on("data", (chunk: Buffer) => {
         controller.enqueue(new Uint8Array(chunk));
       });
 
-      // 监听 stderr (日志输出)
       pgProcess.stderr.on("data", (chunk: Buffer) => {
         logger.info(`[pg_dump] ${chunk.toString().trim()}`);
       });
 
-      // 进程结束
       pgProcess.on("close", (code: number | null) => {
         if (code === 0) {
           logger.info({
@@ -124,7 +172,6 @@ export function executePgDump(mode: ExportMode = "full"): ReadableStream<Uint8Ar
         }
       });
 
-      // 进程错误
       pgProcess.on("error", (err: Error) => {
         logger.error({
           action: "pg_dump_spawn_error",
@@ -144,34 +191,19 @@ export function executePgDump(mode: ExportMode = "full"): ReadableStream<Uint8Ar
   });
 }
 
-/**
- * 执行 pg_restore 导入数据库
- *
- * @param filePath 备份文件路径
- * @param cleanFirst 是否清除现有数据
- * @returns ReadableStream SSE 格式的进度流
- */
-/**
- * 分析 pg_restore 错误类型
- *
- * @param errors - 错误信息数组
- * @returns 错误分析结果
- */
 function analyzeRestoreErrors(errors: string[]): {
   hasFatalErrors: boolean;
   ignorableCount: number;
   fatalCount: number;
   summary: string;
 } {
-  // 可忽略的错误模式（对象已存在、角色不存在）
   const ignorablePatterns = [
     /already exists/i,
     /multiple primary keys/i,
     /duplicate key value/i,
-    /role .* does not exist/i, // 角色不存在（使用 --no-owner 时可忽略）
+    /role .* does not exist/i,
   ];
 
-  // 致命错误模式
   const fatalPatterns = [
     /could not connect/i,
     /authentication failed/i,
@@ -195,7 +227,6 @@ function analyzeRestoreErrors(errors: string[]): {
     } else if (isIgnorable) {
       ignorableCount++;
     } else {
-      // 未知错误，保守处理为致命错误
       fatalCount++;
       fatalErrors.push(error);
     }
@@ -235,24 +266,19 @@ export function executePgRestore(
     dbConfig.user,
     "-d",
     dbConfig.database,
-    "-v", // Verbose（输出详细进度）
+    "-v",
   ];
 
-  // 覆盖模式：清除现有数据
   if (cleanFirst) {
     args.push("--clean", "--if-exists", "--no-owner");
   }
 
-  // 跳过日志数据导入（保留表结构但不导入 message_request 数据）
   if (skipLogs) {
     args.push("--exclude-table-data=message_request");
   }
 
-  // In docker exec mode, the host file path is not visible inside the
-  // container. pg_restore reads from stdin when no filename argument is
-  // given, and custom format (-Fc) supports this.
-  const isDockerExec = !!getDockerComposeExec();
-  if (!isDockerExec) {
+  const isContainerExec = !!getContainerExecCommand() || !!getLegacyComposeExecCommand();
+  if (!isContainerExec) {
     args.push(filePath);
   }
 
@@ -260,10 +286,10 @@ export function executePgRestore(
     "pg_restore",
     args,
     { PGPASSWORD: dbConfig.password },
-    { stdin: isDockerExec }
+    { stdin: isContainerExec }
   );
 
-  if (isDockerExec) {
+  if (isContainerExec) {
     const fileStream = createReadStream(filePath);
     fileStream.pipe(pgProcess.stdin!);
     fileStream.on("error", (err) => {
@@ -287,26 +313,22 @@ export function executePgRestore(
   });
 
   const encoder = new TextEncoder();
-  const errorLines: string[] = []; // 收集所有错误信息
+  const errorLines: string[] = [];
 
   return new ReadableStream({
     start(controller) {
-      // 监听 stderr（pg_restore 的进度信息都输出到 stderr）
       pgProcess.stderr.on("data", (chunk: Buffer) => {
         const message = chunk.toString().trim();
         logger.info(`[pg_restore] ${message}`);
 
-        // 收集错误信息用于后续分析
         if (message.toLowerCase().includes("error:")) {
           errorLines.push(message);
         }
 
-        // 发送 SSE 格式的进度消息
         const sseMessage = `data: ${JSON.stringify({ type: "progress", message })}\n\n`;
         controller.enqueue(encoder.encode(sseMessage));
       });
 
-      // 监听 stdout（一般为空，但为了完整性还是处理）
       pgProcess.stdout.on("data", (chunk: Buffer) => {
         const message = chunk.toString().trim();
         if (message) {
@@ -314,12 +336,8 @@ export function executePgRestore(
         }
       });
 
-      // 进程结束
       pgProcess.on("close", async (code: number | null) => {
-        // 智能错误分析
         const analysis = analyzeRestoreErrors(errorLines);
-
-        // 判断是否需要执行迁移（成功或可忽略错误）
         const shouldRunMigrations =
           code === 0 || (code === 1 && !analysis.hasFatalErrors && analysis.ignorableCount > 0);
 
@@ -335,7 +353,6 @@ export function executePgRestore(
           })}\n\n`;
           controller.enqueue(encoder.encode(progressMessage));
         } else if (code === 1 && !analysis.hasFatalErrors && analysis.ignorableCount > 0) {
-          // 特殊处理：退出代码 1 但只有可忽略错误（对象已存在）
           logger.warn({
             action: "pg_restore_complete_with_warnings",
             database: dbConfig.database,
@@ -350,7 +367,6 @@ export function executePgRestore(
           })}\n\n`;
           controller.enqueue(encoder.encode(progressMessage));
         } else {
-          // 真正的失败
           logger.error({
             action: "pg_restore_error",
             database: dbConfig.database,
@@ -370,7 +386,6 @@ export function executePgRestore(
           return;
         }
 
-        // 如果数据导入成功，自动执行数据库迁移
         if (shouldRunMigrations) {
           try {
             logger.info({
@@ -384,7 +399,6 @@ export function executePgRestore(
             })}\n\n`;
             controller.enqueue(encoder.encode(migrationsMessage));
 
-            // 动态导入迁移函数
             const { runMigrations } = await import("@/lib/migrate");
             await runMigrations();
 
@@ -399,7 +413,6 @@ export function executePgRestore(
             })}\n\n`;
             controller.enqueue(encoder.encode(migrationSuccessMessage));
 
-            // 发送最终完成消息
             const completeMessage = `data: ${JSON.stringify({
               type: "complete",
               message: "数据导入和迁移全部完成！",
@@ -428,7 +441,6 @@ export function executePgRestore(
         controller.close();
       });
 
-      // 进程错误
       pgProcess.on("error", (err: Error) => {
         logger.error({
           action: "pg_restore_spawn_error",
@@ -454,9 +466,6 @@ export function executePgRestore(
   });
 }
 
-/**
- * 获取数据库信息
- */
 export async function getDatabaseInfo(): Promise<{
   size: string;
   tableCount: number;
@@ -477,9 +486,6 @@ export async function getDatabaseInfo(): Promise<{
   };
 }
 
-/**
- * 检查数据库连接是否可用
- */
 export async function checkDatabaseConnection(): Promise<boolean> {
   try {
     await db.execute(sql`SELECT 1`);

@@ -1,9 +1,9 @@
 # 本地开发（dev 工具链）
 
-本目录提供两种本地开发方式，均使用 Docker 启动的 PostgreSQL + Redis：
+本目录提供两种本地开发方式，均使用 Podman pod 启动的 PostgreSQL + Redis：
 
-1) 本机运行 `bun run dev`，数据库与 Redis 由 Docker 提供
-2) Docker 本地构建并运行 app 镜像（无需预构建镜像），数据库与 Redis 由同一 Compose 提供
+1) 本机运行 `bun run dev`，数据库与 Redis 由 Podman 提供
+2) Podman 本地构建并运行 app 容器，数据库与 Redis 由同一 pod 提供
 
 ## 快速开始
 
@@ -13,7 +13,7 @@
   - `make db`
 - 启动 DB/Redis 后运行本机开发服务器（Next dev，端口 13500）：
   - `make dev`
-- 本地构建并启动 Docker app（默认端口 23000）：
+- 本地构建并启动 Podman app（默认端口 23000）：
   - `make app`
 
 如果你希望手动运行（不通过 `make dev`）：
@@ -24,7 +24,7 @@
 
 ## 关于“旧镜像残留”
 
-- `make app` 使用固定标签 `claude-code-hub-local:${APP_VERSION}`，每次 `--build` 会把标签指向新镜像；旧镜像会变成 dangling（不影响运行，但会占用磁盘）。
+- `make app` 使用固定标签 `claude-code-hub-local:${APP_VERSION}`，每次构建会把标签指向新镜像；旧镜像会变成 dangling（不影响运行，但会占用磁盘）。
 - 常用处理：
   - 强制重建并重建容器：`make app-rebuild`
   - 无缓存重建：`make app-nocache`
@@ -33,6 +33,7 @@
 ## 常用命令
 
 - 查看容器状态：`make status`
+- 查看 pod 日志与状态底层会使用 `podman pod ...`
 - 查看日志：`make logs` / `make logs-app` / `make logs-db` / `make logs-redis`
 - 进入数据库：`make db-shell`
 - 进入 Redis：`make redis-shell`
@@ -47,3 +48,9 @@
 - `POSTGRES_PORT=35432 REDIS_PORT=36379 make db`
 - `APP_PORT=24000 make app`
 - `DB_PASSWORD=postgres make dev`
+
+## Rootless 注意事项
+
+- 官方开发路径仅支持 Linux rootless Podman。
+- PostgreSQL 数据目录会通过 `podman unshare chown -R 999:999` 调整属主；宿主机看到高位 subuid/subgid 属主属于正常现象。
+- 如果宿主机启用了 SELinux，私有挂载目录会自动附加 `:Z`；只有明确共享的目录才应使用 `:z`。

@@ -4,7 +4,7 @@ import {
   checkDatabaseConnection,
   type ExportMode,
   executePgDump,
-} from "@/lib/database-backup/docker-executor";
+} from "@/lib/database-backup/container-executor";
 import { logger } from "@/lib/logger";
 
 const VALID_EXPORT_MODES = new Set<ExportMode>(["full", "excludeLogs", "ledgerOnly"]);
