@@ -1,6 +1,6 @@
 # Kubernetes / k3s 部署指南
 
-本文说明如何把 Claude Code Hub 部署到 Kubernetes(含轻量级 k3s)集群。若你只需要单机 Docker 部署,请参考 [`scripts/deploy.sh`](../scripts/deploy.sh) 与 [`docker-compose.yaml`](../docker-compose.yaml)。
+本文说明如何把 Claude Code Hub 部署到 Kubernetes(含轻量级 k3s)集群。若你只需要单机 Podman 部署,请参考 [`scripts/deploy.sh`](../scripts/deploy.sh) 与 [`docker-compose.yaml`](../docker-compose.yaml)。
 
 ---
 
@@ -26,15 +26,15 @@
              └────────┘  └─────────┘  NetworkPolicy 仅允许 app 访问
 ```
 
-### 与 Docker Compose 部署的差异
+### 与 Podman Compose 部署的差异
 
-| 维度 | Docker Compose | Kubernetes |
+| 维度 | Podman Compose | Kubernetes |
 |------|----------------|-----------|
 | 高可用 | 单容器 | HPA + PDB,滚动更新不中断 |
 | 存储 | 本地卷 | PVC (由集群 StorageClass 管理) |
 | 域名 | Caddy (可选) | Ingress / Traefik IngressRoute / NodePort |
 | 密钥 | `.env` 文件 | Kubernetes Secret |
-| 升级 | `docker compose pull` | `cch update` (带迁移 + 回滚) |
+| 升级 | `podman compose pull` | `cch update` (带迁移 + 回滚) |
 | 适用 | 个人/小团队 | 生产 / 多节点 / 企业 |
 
 ---
@@ -589,6 +589,6 @@ deploy/k8s/
 ### 进一步阅读
 
 - 主 README: [README.md](../README.md)
-- Docker 部署: [scripts/deploy.sh](../scripts/deploy.sh)
+- Podman 部署: [scripts/deploy.sh](../scripts/deploy.sh)
 - 架构文档: [docs/architecture-claude-code-hub-2025-11-29.md](./architecture-claude-code-hub-2025-11-29.md)
 - 源 manifest 目录: [deploy/k8s/README.md](../deploy/k8s/README.md)

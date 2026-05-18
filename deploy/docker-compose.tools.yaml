@@ -1,12 +1,12 @@
 # 工具容器配置
-# 用于在 Docker 环境中运行维护脚本
+# 用于在容器环境中运行维护脚本
 #
 # 使用方法（在项目根目录执行）：
-#   docker compose -f docker-compose.yaml -f deploy/docker-compose.tools.yaml run --rm tools bun run scripts/clear-session-bindings.ts
+#   podman compose -f docker-compose.yaml -f deploy/docker-compose.tools.yaml run --rm tools bun run scripts/clear-session-bindings.ts
 #
 # 带参数示例：
-#   docker compose -f docker-compose.yaml -f deploy/docker-compose.tools.yaml run --rm tools bun run scripts/clear-session-bindings.ts --priority 10 --dry-run
-#   docker compose -f docker-compose.yaml -f deploy/docker-compose.tools.yaml run --rm tools bun run scripts/clear-session-bindings.ts --id 1,2,3 --yes
+#   podman compose -f docker-compose.yaml -f deploy/docker-compose.tools.yaml run --rm tools bun run scripts/clear-session-bindings.ts --priority 10 --dry-run
+#   podman compose -f docker-compose.yaml -f deploy/docker-compose.tools.yaml run --rm tools bun run scripts/clear-session-bindings.ts --id 1,2,3 --yes
 #
 # 说明：
 #   - 必须同时指定主 docker-compose.yaml 以共享网络

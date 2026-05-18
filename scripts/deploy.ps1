@@ -6,7 +6,7 @@
 [CmdletBinding()]
 param(
     [Alias("b")]
-    [ValidateSet("main", "dev", "")]
+    [ValidateSet("main", "dev", "main-moonite", "dev-moonite", "")]
     [string]$Branch = "",
     
     [Alias("p")]
@@ -57,7 +57,7 @@ Claude Code Hub - One-Click Deployment Script v$VERSION
 Usage: .\deploy.ps1 [OPTIONS]
 
 Options:
-  -Branch, -b <name>         Branch to deploy: main (default) or dev
+  -Branch, -b <name>         Branch to deploy: main (default), dev, main-moonite, or dev-moonite
   -Port, -p <port>           App external port (default: 23000)
   -AdminToken, -t <token>    Custom admin token (default: auto-generated)
   -DeployDir, -d <path>      Custom deployment directory
@@ -91,6 +91,12 @@ function Initialize-Parameters {
         } elseif ($Branch -eq "dev") {
             $script:IMAGE_TAG = "dev"
             $script:BRANCH_NAME = "dev"
+        } elseif ($Branch -eq "main-moonite") {
+            $script:IMAGE_TAG = "main-moonite"
+            $script:BRANCH_NAME = "main-moonite"
+        } elseif ($Branch -eq "dev-moonite") {
+            $script:IMAGE_TAG = "dev-moonite"
+            $script:BRANCH_NAME = "dev-moonite"
         }
     }
     
@@ -155,45 +161,43 @@ function Show-Header {
     Write-Host ""
 }
 
-function Test-DockerInstalled {
-    Write-ColorOutput "Checking Docker installation..." -Type Info
-    
+function Test-PodmanInstalled {
+    Write-ColorOutput "Checking Podman installation..." -Type Info
+
     try {
-        $dockerVersion = docker --version 2>$null
+        $podmanVersion = podman --version 2>$null
         if ($LASTEXITCODE -ne 0) {
-            Write-ColorOutput "Docker is not installed" -Type Warning
+            Write-ColorOutput "Podman is not installed" -Type Warning
             return $false
         }
-        
-        $composeVersion = docker compose version 2>$null
+
+        $composeVersion = podman compose version 2>$null
         if ($LASTEXITCODE -ne 0) {
-            Write-ColorOutput "Docker Compose is not installed" -Type Warning
+            Write-ColorOutput "podman-compose is not installed" -Type Warning
             return $false
         }
-        
-        Write-ColorOutput "Docker and Docker Compose are installed" -Type Success
-        Write-Host $dockerVersion
-        Write-Host $composeVersion
+
+        Write-ColorOutput "Podman and podman-compose are installed" -Type Success
         return $true
     }
     catch {
-        Write-ColorOutput "Docker is not installed" -Type Warning
+        Write-ColorOutput "Podman is not installed" -Type Warning
         return $false
     }
 }
 
-function Show-DockerInstallInstructions {
-    Write-ColorOutput "Docker is not installed on this system" -Type Error
+function Show-PodmanInstallInstructions {
+    Write-ColorOutput "Podman is not installed on this system" -Type Error
     Write-Host ""
-    Write-ColorOutput "Please install Docker Desktop for Windows:" -Type Info
-    Write-Host "  1. Download from: https://www.docker.com/products/docker-desktop/" -ForegroundColor Cyan
+    Write-ColorOutput "Please install Podman for Windows:" -Type Info
+    Write-Host "  1. Download from: https://github.com/containers/podman/releases" -ForegroundColor Cyan
     Write-Host "  2. Run the installer and follow the instructions"
     Write-Host "  3. Restart your computer after installation"
     Write-Host "  4. Run this script again"
     Write-Host ""
-    Write-ColorOutput "Press any key to open Docker Desktop download page..." -Type Info
+    Write-ColorOutput "Press any key to open Podman releases page..." -Type Info
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    Start-Process "https://www.docker.com/products/docker-desktop/"
+    Start-Process "https://github.com/containers/podman/releases"
     exit 1
 }
 
@@ -211,8 +215,10 @@ function Select-Branch {
 
     Write-Host ""
     Write-ColorOutput "Please select the branch to deploy:" -Type Info
-    Write-Host "  1) main   (Stable release - recommended for production)" -ForegroundColor Green
-    Write-Host "  2) dev    (Latest features - for testing)" -ForegroundColor Yellow
+    Write-Host "  1) main         (Stable release - recommended for production)" -ForegroundColor Green
+    Write-Host "  2) dev          (Latest features - for testing)" -ForegroundColor Yellow
+    Write-Host "  3) main-moonite (Moonite's stable branch)" -ForegroundColor Blue
+    Write-Host "  4) dev-moonite  (Moonite's dev branch)" -ForegroundColor Blue
     Write-Host ""
 
     while ($true) {
@@ -237,7 +243,19 @@ function Select-Branch {
             Write-ColorOutput "Selected branch: dev (image tag: dev)" -Type Success
             return
         }
-        Write-ColorOutput "Invalid choice. Type 1, 2, 'main', or 'dev' and press Enter." -Type Error
+        if ($normalized -in "3") {
+            $script:IMAGE_TAG = "main-moonite"
+            $script:BRANCH_NAME = "main-moonite"
+            Write-ColorOutput "Selected branch: main-moonite (image tag: main-moonite)" -Type Success
+            return
+        }
+        if ($normalized -in "4") {
+            $script:IMAGE_TAG = "dev-moonite"
+            $script:BRANCH_NAME = "dev-moonite"
+            Write-ColorOutput "Selected branch: dev-moonite (image tag: dev-moonite)" -Type Success
+            return
+        }
+        Write-ColorOutput "Invalid choice. Type 1, 2, 3, 4, 'main', or 'dev' and press Enter." -Type Error
     }
 }
 
@@ -296,7 +314,7 @@ function Get-SuffixFromCompose {
         Write-ColorOutput "Using existing suffix: $($script:SUFFIX)" -Type Info
     }
     else {
-        Write-ColorOutput "Could not extract suffix from docker-compose.yaml, generating new one" -Type Warning
+        Write-ColorOutput "Could not extract suffix from compose file, generating new one" -Type Warning
         New-RandomSuffix
     }
 }
@@ -370,7 +388,7 @@ function New-DeploymentDirectory {
 }
 
 function Write-ComposeFile {
-    Write-ColorOutput "Writing docker-compose.yaml..." -Type Info
+    Write-ColorOutput "Writing compose file..." -Type Info
     
     # Build ports section for app (only if Caddy is not enabled)
     $appPortsSection = ""
@@ -426,7 +444,7 @@ services:
       start_period: 5s
 
   app:
-    image: ghcr.io/ding113/claude-code-hub:$IMAGE_TAG
+    image: ghcr.io/moonite1209/claude-code-hub:$IMAGE_TAG
     container_name: claude-code-hub-app-$SUFFIX
     depends_on:
       postgres:
@@ -500,7 +518,7 @@ volumes:
     
     try {
         Set-Content -Path "$DEPLOY_DIR\docker-compose.yaml" -Value $composeContent -Encoding UTF8
-        Write-ColorOutput "docker-compose.yaml created" -Type Success
+        Write-ColorOutput "Compose file created" -Type Success
     }
     catch {
         Write-ColorOutput "Failed to write docker-compose.yaml: $_" -Type Error
@@ -654,23 +672,23 @@ LOG_LEVEL=info
 }
 
 function Start-Services {
-    Write-ColorOutput "Starting Docker services..." -Type Info
-    
+    Write-ColorOutput "Starting services..." -Type Info
+
     try {
         Push-Location $DEPLOY_DIR
-        
-        docker compose pull
+
+        podman compose pull
         if ($LASTEXITCODE -ne 0) {
-            throw "Failed to pull Docker images"
+            throw "Failed to pull images"
         }
-        
-        docker compose up -d
+
+        podman compose up -d
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to start services"
         }
-        
+
         Pop-Location
-        Write-ColorOutput "Docker services started" -Type Success
+        Write-ColorOutput "Services started" -Type Success
     }
     catch {
         Pop-Location
@@ -691,9 +709,9 @@ function Wait-ForHealth {
         $attempt++
         
         try {
-            $postgresHealth = (docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-db-$SUFFIX" 2>$null)
-            $redisHealth = (docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-redis-$SUFFIX" 2>$null)
-            $appHealth = (docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-app-$SUFFIX" 2>$null)
+            $postgresHealth = (podman inspect --format='{{.State.Health.Status}}' "claude-code-hub-db-$SUFFIX" 2>$null)
+            $redisHealth = (podman inspect --format='{{.State.Health.Status}}' "claude-code-hub-redis-$SUFFIX" 2>$null)
+            $appHealth = (podman inspect --format='{{.State.Health.Status}}' "claude-code-hub-app-$SUFFIX" 2>$null)
             
             if (-not $postgresHealth) { $postgresHealth = "unknown" }
             if (-not $redisHealth) { $redisHealth = "unknown" }
@@ -718,7 +736,7 @@ function Wait-ForHealth {
     
     Pop-Location
     Write-ColorOutput "Services did not become healthy within 60 seconds" -Type Warning
-    Write-ColorOutput "You can check the logs with: cd $DEPLOY_DIR; docker compose logs -f" -Type Info
+    Write-ColorOutput "You can check the logs with: cd $DEPLOY_DIR; podman compose logs -f" -Type Info
     return $false
 }
 
@@ -810,9 +828,9 @@ function Show-SuccessMessage {
     Write-Host ""
     
     Write-Host "Useful Commands:" -ForegroundColor Blue
-    Write-Host "   View logs:     cd $DEPLOY_DIR; docker compose logs -f" -ForegroundColor Yellow
-    Write-Host "   Stop services: cd $DEPLOY_DIR; docker compose down" -ForegroundColor Yellow
-    Write-Host "   Restart:       cd $DEPLOY_DIR; docker compose restart" -ForegroundColor Yellow
+    Write-Host "   View logs:     cd $DEPLOY_DIR; podman compose logs -f" -ForegroundColor Yellow
+    Write-Host "   Stop services: cd $DEPLOY_DIR; podman compose down" -ForegroundColor Yellow
+    Write-Host "   Restart:       cd $DEPLOY_DIR; podman compose restart" -ForegroundColor Yellow
 
     if ($script:ENABLE_CADDY) {
         Write-Host ""
@@ -849,8 +867,8 @@ function Main {
 
     Show-Header
     
-    if (-not (Test-DockerInstalled)) {
-        Show-DockerInstallInstructions
+    if (-not (Test-PodmanInstalled)) {
+        Show-PodmanInstallInstructions
         exit 1
     }
     
@@ -889,7 +907,7 @@ function Main {
         else {
             Write-ColorOutput "Deployment completed but some services may not be fully healthy yet" -Type Warning
         }
-        Write-ColorOutput "Please check the logs: cd $DEPLOY_DIR; docker compose logs -f" -Type Info
+        Write-ColorOutput "Please check the logs: cd $DEPLOY_DIR; podman compose logs -f" -Type Info
         Show-SuccessMessage
     }
 }

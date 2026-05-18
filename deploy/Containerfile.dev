@@ -5,7 +5,8 @@ WORKDIR /app
 
 FROM build-base AS deps
 COPY package.json ./
-RUN bun install
+RUN echo '[install]\nregistry = "https://registry.npmmirror.com/"' > bunfig.toml && \
+    bun install
 
 FROM deps AS build
 COPY . .

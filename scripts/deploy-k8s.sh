@@ -59,7 +59,7 @@ b64d() {
 ###############################################################################
 DEFAULT_NAMESPACE="claude-code-hub"
 # k8s 部署默认跟随 main 分支发布镜像;仅显式传 -b dev 时才切到 :dev。
-DEFAULT_IMAGE="ghcr.io/ding113/claude-code-hub:latest"
+DEFAULT_IMAGE="ghcr.io/moonite1209/claude-code-hub:latest"
 DEFAULT_REPLICAS=2
 DEFAULT_HPA_MIN=2
 DEFAULT_HPA_MAX=6
@@ -179,7 +179,7 @@ Examples:
   # 仅渲染 manifest 不应用 (用于离线审阅)
   $0 --dry-render --deploy-dir /tmp/cch-k8s -y
 
-For more information: https://github.com/ding113/claude-code-hub
+For more information: https://github.com/moonite1209/claude-code-hub
 EOF
 }
 
@@ -379,8 +379,8 @@ resolve_config() {
     # 分支捷径：不传时保持 main/latest 为默认语义
     if [[ -n "$BRANCH_ARG" ]]; then
         case "$BRANCH_ARG" in
-            main|master) APP_IMAGE="ghcr.io/ding113/claude-code-hub:latest" ;;
-            dev)         APP_IMAGE="ghcr.io/ding113/claude-code-hub:dev" ;;
+            main|master) APP_IMAGE="ghcr.io/moonite1209/claude-code-hub:latest" ;;
+            dev)         APP_IMAGE="ghcr.io/moonite1209/claude-code-hub:dev" ;;
             *)           log_error "Unknown branch: $BRANCH_ARG (expected: main|dev)"; exit 1 ;;
         esac
     fi

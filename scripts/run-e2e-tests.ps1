@@ -18,13 +18,13 @@ Write-Host ""
 # ==================== 1. 检查数据库连接 ====================
 
 Write-Host "🔍 检查数据库连接..." -ForegroundColor Cyan
-$postgresRunning = docker ps | Select-String "claude-code-hub-db-dev"
+$postgresRunning = podman ps | Select-String "claude-code-hub-db-dev"
 
 if ($postgresRunning) {
     Write-Host "✅ PostgreSQL 已运行" -ForegroundColor Green
 } else {
     Write-Host "❌ PostgreSQL 未运行，正在启动..." -ForegroundColor Yellow
-    docker compose up -d postgres redis
+    podman compose up -d postgres redis
     Write-Host "⏳ 等待数据库启动..." -ForegroundColor Yellow
     Start-Sleep -Seconds 5
 }

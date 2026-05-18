@@ -1,9 +1,9 @@
 # 本地开发（dev 工具链）
 
-本目录提供两种本地开发方式，均使用 Docker 启动的 PostgreSQL + Redis：
+本目录提供两种本地开发方式，均使用 Podman 启动的 PostgreSQL + Redis：
 
-1) 本机运行 `bun run dev`，数据库与 Redis 由 Docker 提供
-2) Docker 本地构建并运行 app 镜像（无需预构建镜像），数据库与 Redis 由同一 Compose 提供
+1) 本机运行 `bun run dev`，数据库与 Redis 由 Podman 提供
+2) Podman 本地构建并运行 app 镜像（无需预构建镜像），数据库与 Redis 由同一 Compose 提供
 
 ## 快速开始
 
@@ -13,7 +13,7 @@
   - `make db`
 - 启动 DB/Redis 后运行本机开发服务器（Next dev，端口 13500）：
   - `make dev`
-- 本地构建并启动 Docker app（默认端口 23000）：
+- 本地构建并启动 Podman app（默认端口 23000）：
   - `make app`
 
 如果你希望手动运行（不通过 `make dev`）：

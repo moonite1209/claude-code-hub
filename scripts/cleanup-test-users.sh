@@ -4,7 +4,7 @@
 echo "检查测试用户数量..."
 
 # 统计测试用户
-docker compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
+podman compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
 SELECT
   COUNT(*) as 测试用户数量
 FROM users
@@ -14,7 +14,7 @@ WHERE (name LIKE '测试用户%' OR name LIKE '%test%' OR name LIKE 'Test%')
 
 echo ""
 echo "预览将要删除的用户（前 10 个）..."
-docker compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
+podman compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
 SELECT id, name, created_at
 FROM users
 WHERE (name LIKE '测试用户%' OR name LIKE '%test%' OR name LIKE 'Test%')
@@ -30,7 +30,7 @@ if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
   echo "开始清理..."
 
   # 软删除关联的 keys
-  docker compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
+  podman compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
   UPDATE keys
   SET deleted_at = NOW(), updated_at = NOW()
   WHERE user_id IN (
@@ -42,7 +42,7 @@ if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
   "
 
   # 软删除测试用户
-  docker compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
+  podman compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
   UPDATE users
   SET deleted_at = NOW(), updated_at = NOW()
   WHERE (name LIKE '测试用户%' OR name LIKE '%test%' OR name LIKE 'Test%')
@@ -52,7 +52,7 @@ if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
   echo "清理完成！"
   echo ""
   echo "剩余用户统计："
-  docker compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
+  podman compose -f docker-compose.dev.yaml exec -T postgres psql -U postgres -d claude_code_hub -c "
   SELECT COUNT(*) as 总用户数 FROM users WHERE deleted_at IS NULL;
   "
 else

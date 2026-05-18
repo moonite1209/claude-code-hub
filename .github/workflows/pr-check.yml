@@ -89,7 +89,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./deploy/Dockerfile
+          file: ./deploy/Containerfile
           platforms: linux/amd64 # PR检查使用单一架构提高速度
           push: false # 永远不推送，仅测试构建
           tags: ${{ steps.meta.outputs.tags }}

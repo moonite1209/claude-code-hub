@@ -59,7 +59,7 @@ Claude Code Hub - One-Click Deployment Script v${VERSION}
 Usage: $0 [OPTIONS]
 
 Options:
-  -b, --branch <name>        Branch to deploy: main (default) or dev
+  -b, --branch <name>        Branch to deploy: main (default), dev, main-moonite, or dev-moonite
   -p, --port <port>          App external port (default: 23000)
   -t, --admin-token <token>  Custom admin token (default: auto-generated)
   -d, --deploy-dir <path>    Custom deployment directory
@@ -79,7 +79,7 @@ Examples:
   $0 -y                                 # Update existing deployment (auto-detected)
   $0 --force-new -y                     # Force fresh install even if deployment exists
 
-For more information, visit: https://github.com/ding113/claude-code-hub
+For more information, visit: https://github.com/moonite1209/claude-code-hub
 EOF
 }
 
@@ -183,8 +183,16 @@ validate_inputs() {
                 IMAGE_TAG="dev"
                 BRANCH_NAME="dev"
                 ;;
+            main-moonite)
+                IMAGE_TAG="main-moonite"
+                BRANCH_NAME="main-moonite"
+                ;;
+            dev-moonite)
+                IMAGE_TAG="dev-moonite"
+                BRANCH_NAME="dev-moonite"
+                ;;
             *)
-                log_error "Invalid branch: $BRANCH_ARG (must be 'main' or 'dev')"
+                log_error "Invalid branch: $BRANCH_ARG (must be 'main', 'dev', 'main-moonite', or 'dev-moonite')"
                 exit 1
                 ;;
         esac
@@ -243,8 +251,10 @@ select_branch() {
 
     echo ""
     echo -e "${BLUE}Please select the branch to deploy:${NC}"
-    echo -e "  ${GREEN}1)${NC} main   (Stable release - recommended for production)"
-    echo -e "  ${YELLOW}2)${NC} dev    (Latest features - for testing)"
+    echo -e "  ${GREEN}1)${NC} main         (Stable release - recommended for production)"
+    echo -e "  ${YELLOW}2)${NC} dev          (Latest features - for testing)"
+    echo -e "  ${BLUE}3)${NC} main-moonite (Moonite's stable branch)"
+    echo -e "  ${BLUE}4)${NC} dev-moonite  (Moonite's dev branch)"
     echo ""
 
     local choice normalized
@@ -268,68 +278,54 @@ select_branch() {
                 log_success "Selected branch: dev (image tag: dev)"
                 break
                 ;;
+            3)
+                IMAGE_TAG="main-moonite"
+                BRANCH_NAME="main-moonite"
+                log_success "Selected branch: main-moonite (image tag: main-moonite)"
+                break
+                ;;
+            4)
+                IMAGE_TAG="dev-moonite"
+                BRANCH_NAME="dev-moonite"
+                log_success "Selected branch: dev-moonite (image tag: dev-moonite)"
+                break
+                ;;
             *)
-                log_error "Invalid choice. Type 1, 2, 'main', or 'dev' and press Enter."
+                log_error "Invalid choice. Please enter 1, 2, 3, or 4."
                 ;;
         esac
     done
 }
 
-check_docker() {
-    log_info "Checking Docker installation..."
-    
-    if ! command -v docker &> /dev/null; then
-        log_warning "Docker is not installed"
+check_podman() {
+    log_info "Checking Podman installation..."
+
+    if ! command -v podman &> /dev/null; then
+        log_warning "Podman is not installed"
         return 1
     fi
-    
-    if ! docker compose version &> /dev/null && ! docker-compose --version &> /dev/null; then
-        log_warning "Docker Compose is not installed"
+
+    if ! podman compose version &> /dev/null && ! podman-compose --version &> /dev/null; then
+        log_warning "podman-compose is not installed"
         return 1
     fi
-    
-    log_success "Docker and Docker Compose are installed"
-    docker --version
-    docker compose version 2>/dev/null || docker-compose --version
+
+    log_success "Podman and podman-compose are installed"
     return 0
 }
 
-install_docker() {
-    log_info "Installing Docker..."
-    
-    if [[ "$OS_TYPE" == "linux" ]]; then
-        if [[ $EUID -ne 0 ]]; then
-            log_error "Docker installation requires root privileges on Linux"
-            log_info "Please run: sudo $0"
-            exit 1
-        fi
-    fi
-    
-    log_info "Downloading Docker installation script from get.docker.com..."
-    local temp_script
-    temp_script=$(mktemp)
-    if curl -fsSL https://get.docker.com -o "$temp_script"; then
-        log_info "Running Docker installation script..."
-        sh "$temp_script"
-        rm -f "$temp_script"
-        
-        if [[ "$OS_TYPE" == "linux" ]]; then
-            log_info "Starting Docker service..."
-            systemctl start docker
-            systemctl enable docker
-            
-            if [[ -n "$SUDO_USER" ]]; then
-                log_info "Adding user $SUDO_USER to docker group..."
-                usermod -aG docker "$SUDO_USER"
-                log_warning "Please log out and log back in for group changes to take effect"
-            fi
-        fi
-        
-        log_success "Docker installed successfully"
-    else
-        log_error "Failed to download Docker installation script"
-        exit 1
-    fi
+ensure_podman() {
+    log_error "Podman is not installed. Please install it first:"
+    echo ""
+    echo "  Ubuntu/Debian:  sudo apt install podman podman-compose"
+    echo "  Fedora/RHEL:    sudo dnf install podman podman-compose"
+    echo "  Arch:           sudo pacman -S podman podman-compose"
+    echo "  openSUSE:       sudo zypper install podman podman-compose"
+    echo ""
+    echo "After installation, configure rootless networking:"
+    echo "  mkdir -p ~/.config/containers"
+    echo "  printf '[network]\\ndefault_rootless_network_cmd = \"slirp4netns\"\\n' > ~/.config/containers/containers.conf"
+    exit 1
 }
 
 generate_random_suffix() {
@@ -378,7 +374,7 @@ extract_suffix_from_compose() {
     local compose_file="$DEPLOY_DIR/docker-compose.yaml"
     SUFFIX=$(sed -n 's/.*container_name: claude-code-hub-db-\([a-z0-9]*\)/\1/p' "$compose_file" | head -1)
     if [[ -z "$SUFFIX" ]]; then
-        log_warning "Could not extract suffix from docker-compose.yaml, generating new one"
+        log_warning "Could not extract suffix from compose file, generating new one"
         generate_random_suffix
         return
     fi
@@ -461,7 +457,7 @@ create_deployment_dir() {
 }
 
 write_compose_file() {
-    log_info "Writing docker-compose.yaml..."
+    log_info "Writing compose file..."
     
     # Determine app ports configuration
     local app_ports_config
@@ -518,7 +514,7 @@ services:
       start_period: 5s
 
   app:
-    image: ghcr.io/ding113/claude-code-hub:${IMAGE_TAG}
+    image: ghcr.io/moonite1209/claude-code-hub:${IMAGE_TAG}
     container_name: claude-code-hub-app-${SUFFIX}
     depends_on:
       postgres:
@@ -600,7 +596,7 @@ volumes:
 EOF
     fi
     
-    log_success "docker-compose.yaml created"
+    log_success "Compose file created"
 }
 
 write_caddyfile() {
@@ -713,19 +709,19 @@ EOF
 }
 
 start_services() {
-    log_info "Starting Docker services..."
-    
+    log_info "Starting services..."
+
     cd "$DEPLOY_DIR"
-    
-    if docker compose version &> /dev/null; then
-        docker compose pull
-        docker compose up -d
+
+    if podman compose version &> /dev/null; then
+        podman compose pull
+        podman compose up -d
     else
-        docker-compose pull
-        docker-compose up -d
+        podman-compose pull
+        podman-compose up -d
     fi
-    
-    log_success "Docker services started"
+
+    log_success "Services started"
 }
 
 wait_for_health() {
@@ -739,9 +735,9 @@ wait_for_health() {
     while [ $attempt -lt $max_attempts ]; do
         attempt=$((attempt + 1))
         
-        local postgres_health=$(docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-db-${SUFFIX}" 2>/dev/null || echo "unknown")
-        local redis_health=$(docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-redis-${SUFFIX}" 2>/dev/null || echo "unknown")
-        local app_health=$(docker inspect --format='{{.State.Health.Status}}' "claude-code-hub-app-${SUFFIX}" 2>/dev/null || echo "unknown")
+        local postgres_health=$(podman inspect --format='{{.State.Health.Status}}' "claude-code-hub-db-${SUFFIX}" 2>/dev/null || echo "unknown")
+        local redis_health=$(podman inspect --format='{{.State.Health.Status}}' "claude-code-hub-redis-${SUFFIX}" 2>/dev/null || echo "unknown")
+        local app_health=$(podman inspect --format='{{.State.Health.Status}}' "claude-code-hub-app-${SUFFIX}" 2>/dev/null || echo "unknown")
         
         log_info "Health status - Postgres: $postgres_health, Redis: $redis_health, App: $app_health"
         
@@ -756,7 +752,7 @@ wait_for_health() {
     done
     
     log_warning "Services did not become healthy within 60 seconds"
-    log_info "You can check the logs with: cd $DEPLOY_DIR && docker compose logs -f"
+    log_info "You can check the logs with: cd $DEPLOY_DIR && podman compose logs -f"
     return 1
 }
 
@@ -844,9 +840,9 @@ print_success_message() {
     fi
     echo ""
     echo -e "${BLUE}Useful Commands:${NC}"
-    echo -e "   View logs:    ${YELLOW}cd $DEPLOY_DIR && docker compose logs -f${NC}"
-    echo -e "   Stop services: ${YELLOW}cd $DEPLOY_DIR && docker compose down${NC}"
-    echo -e "   Restart:      ${YELLOW}cd $DEPLOY_DIR && docker compose restart${NC}"
+    echo -e "   View logs:    ${YELLOW}cd $DEPLOY_DIR && podman compose logs -f${NC}"
+    echo -e "   Stop services: ${YELLOW}cd $DEPLOY_DIR && podman compose down${NC}"
+    echo -e "   Restart:      ${YELLOW}cd $DEPLOY_DIR && podman compose restart${NC}"
 
     if [[ "$ENABLE_CADDY" == true ]]; then
         echo ""
@@ -880,14 +876,9 @@ main() {
     # Apply CLI overrides after OS detection (for deploy dir)
     validate_inputs
     
-    if ! check_docker; then
-        log_warning "Docker is not installed. Attempting to install..."
-        install_docker
-        
-        if ! check_docker; then
-            log_error "Docker installation failed. Please install Docker manually."
-            exit 1
-        fi
+    if ! check_podman; then
+        log_warning "Podman is not installed."
+        ensure_podman
     fi
     
     select_branch
@@ -920,7 +911,7 @@ main() {
         else
             log_warning "Deployment completed but some services may not be fully healthy yet"
         fi
-        log_info "Please check the logs: cd $DEPLOY_DIR && docker compose logs -f"
+        log_info "Please check the logs: cd $DEPLOY_DIR && podman compose logs -f"
         print_success_message
     fi
 }

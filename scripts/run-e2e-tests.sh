@@ -21,11 +21,11 @@ echo ""
 COMPOSE_FILE="docker-compose.dev.yaml"
 
 echo "检查数据库连接..."
-if [ -n "$(docker compose -f "$COMPOSE_FILE" ps -q --status running postgres 2>/dev/null)" ]; then
+if [ -n "$(podman compose -f "$COMPOSE_FILE" ps -q --status running postgres 2>/dev/null)" ]; then
   echo "PostgreSQL 已运行"
 else
   echo "PostgreSQL 未运行，正在启动..."
-  docker compose -f "$COMPOSE_FILE" up -d postgres redis
+  podman compose -f "$COMPOSE_FILE" up -d postgres redis
   echo "等待数据库启动..."
   sleep 5
 fi

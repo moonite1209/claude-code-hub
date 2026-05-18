@@ -3,8 +3,8 @@
 # ================================
 #
 # 目标:
-# 1) 通过 Docker 启动 PostgreSQL + Redis（供本机 bun dev 使用）
-# 2) 通过 Docker 本地构建 app 镜像并联动 DB/Redis（无需预构建镜像）
+# 1) 通过 Podman 启动 PostgreSQL + Redis（供本机 bun dev 使用）
+# 2) 通过 Podman 本地构建 app 镜像并联动 DB/Redis（无需预构建镜像）
 #
 # 说明:
 # - 在项目根目录可直接运行 `make <target>`（根 Makefile 会转发到此处）
@@ -14,7 +14,9 @@
 
 PROJECT_NAME ?= cch-dev
 COMPOSE_FILE ?= docker-compose.yaml
-COMPOSE := docker compose -f $(COMPOSE_FILE) -p $(PROJECT_NAME)
+COMPOSE_CMD ?= podman compose
+UNSET_PROXY ?= http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= no_proxy= NO_PROXY= 
+COMPOSE := $(UNSET_PROXY) $(COMPOSE_CMD) -f $(COMPOSE_FILE) -p $(PROJECT_NAME)
 
 # -------- 可配置项（均可通过环境变量覆盖） --------
 export DB_USER ?= postgres
@@ -38,7 +40,7 @@ help:
 	@echo "Claude Code Hub - dev 工具链"
 	@echo ""
 	@echo "常用命令:"
-	@echo "  make db        启动 PostgreSQL + Redis（Docker）"
+	@echo "  make db        启动 PostgreSQL + Redis（Podman）"
 	@echo "  make dev       启动 db/redis 后运行 bun dev（连接 Docker db/redis）"
 	@echo "  make app       本地构建并启动 app 镜像 + db + redis（无需预构建镜像）"
 	@echo "  make build     仅本地构建 app 镜像"
@@ -74,24 +76,24 @@ dev: db
 	@echo ""
 	@DSN="$(LOCAL_DSN)" REDIS_URL="$(LOCAL_REDIS_URL)" ENABLE_RATE_LIMIT="$(ENABLE_RATE_LIMIT)" \
 		ADMIN_TOKEN="$(ADMIN_TOKEN)" \
-		PG_COMPOSE_EXEC="docker compose -f $(CURDIR)/$(COMPOSE_FILE) -p $(PROJECT_NAME)" \
+		PG_COMPOSE_EXEC="http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= no_proxy= NO_PROXY= $(COMPOSE_CMD) -f $(CURDIR)/$(COMPOSE_FILE) -p $(PROJECT_NAME)" \
 		bun run dev
 
 build:
-	@$(COMPOSE) --profile app build app
+	@$(COMPOSE) build app
 
 build-nocache:
-	@$(COMPOSE) --profile app build --no-cache app
+	@$(COMPOSE) build --no-cache app
 
 app:
-	@$(COMPOSE) --profile app up -d --build
+	@$(COMPOSE) up -d --build
 	@$(COMPOSE) ps
 	@echo ""
 	@echo "App is starting. Visit: http://localhost:$(APP_PORT)"
 	@echo ""
 
 app-rebuild:
-	@$(COMPOSE) --profile app up -d --build --force-recreate
+	@$(COMPOSE) up -d --build --force-recreate
 	@$(COMPOSE) ps
 
 app-nocache:
@@ -99,10 +101,10 @@ app-nocache:
 	@$(MAKE) app-rebuild
 
 prune-images:
-	@docker image prune -f
+	@podman image prune -f
 
 rm-app-image:
-	@docker image rm -f "claude-code-hub-local:$(APP_VERSION)" 2>/dev/null || true
+	@podman image rm -f "claude-code-hub-local:$(APP_VERSION)" 2>/dev/null || true
 
 migrate: db
 	@DSN="$(LOCAL_DSN)" bun run db:migrate
@@ -117,7 +119,7 @@ logs:
 	@$(COMPOSE) logs -f --tail=200
 
 logs-app:
-	@$(COMPOSE) --profile app logs -f --tail=200 app
+	@$(COMPOSE) logs -f --tail=200 app
 
 logs-db:
 	@$(COMPOSE) logs -f --tail=200 postgres
